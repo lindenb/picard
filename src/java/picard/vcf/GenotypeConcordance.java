@@ -31,6 +31,7 @@ import htsjdk.samtools.util.Log;
 import htsjdk.samtools.util.PeekableIterator;
 import htsjdk.samtools.util.ProgressLogger;
 import htsjdk.samtools.util.SequenceUtil;
+import htsjdk.tribble.Tribble;
 import htsjdk.variant.variantcontext.Genotype;
 import htsjdk.variant.variantcontext.VariantContext;
 import htsjdk.variant.variantcontext.VariantContextComparator;
@@ -85,7 +86,7 @@ public class GenotypeConcordance extends CommandLineProgram {
     @Option(shortName = "CS", doc="The name of the call sample within the call VCF")
     public String CALL_SAMPLE;
 
-    @Option(doc="One or more interval list files that will be used to limit the genotype concordance.")
+    @Option(doc="One or more interval list files that will be used to limit the genotype concordance.  Note - if intervals are specified, the VCF files must be indexed.")
     public List<File> INTERVALS;
 
     @Option(doc="If true, multiple interval lists will be intersected. If false multiple lists will be unioned.")
@@ -138,7 +139,8 @@ public class GenotypeConcordance extends CommandLineProgram {
         IntervalList intervals = null;
         SAMSequenceDictionary intervalsSamSequenceDictionary = null;
         if (usingIntervals) {
-            log.info("Loading up region lists.");
+            USE_VCF_INDEX = true;   // If intervals are specified, the VCF files must be indexed
+            log.info("Starting to load intervals list(s).");
             long genomeBaseCount = 0;
             for (final File f : INTERVALS) {
                 IOUtil.assertFileIsReadable(f);
@@ -155,7 +157,13 @@ public class GenotypeConcordance extends CommandLineProgram {
             if (intervals != null) {
                 intervals = intervals.uniqued();
             }
-            log.info("Finished loading up region lists.");
+            log.info("Finished loading up intervals list(s).");
+        }
+        if (USE_VCF_INDEX) {
+            // Index file is requred either because we are using intervals, or because user-set parameter
+            if ((!Tribble.indexFile(TRUTH_VCF).exists() || (!Tribble.indexFile(CALL_VCF).exists()))) {
+                throw new PicardException("Index file(s) not found for one or both of the VCFs.  Note - if intervals are specified, the VCF files must be indexed.");
+            }
         }
 
         final VCFFileReader truthReader = new VCFFileReader(TRUTH_VCF, USE_VCF_INDEX);
