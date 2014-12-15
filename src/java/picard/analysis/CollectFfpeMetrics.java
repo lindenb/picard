@@ -389,8 +389,12 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         int oxidatedA;
         int controlC;
         int oxidatedC;
+        int controlG;
+        int oxidatedG;
+        int controlT;
+        int oxidatedT;
 
-        int total() { return controlC + oxidatedC + controlA + oxidatedA; }
+        int total() { return controlC + oxidatedC + controlA + oxidatedA + controlG + oxidatedG + controlT + oxidatedT; }
     }
 
     /**
@@ -484,8 +488,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
          */
         private Counts computeAlleleFraction(final SamLocusIterator.LocusInfo info, final byte refBase) {
             final Counts counts = new Counts();
-            // TODO this is no longer a binary thing; assume that e.g. C could go to A, G, or T
-            final byte altBase = (refBase == 'C') ? (byte) 'A' : (byte) 'T';
 
             for (final SamLocusIterator.RecordAndOffset rec : info.getRecordAndPositions()) {
                 final byte qual;
@@ -508,24 +510,37 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                 final byte baseAsRead = samrec.getReadNegativeStrandFlag() ? SequenceUtil.complement(base) : base;
                 final int read = samrec.getReadPairedFlag() && samrec.getSecondOfPairFlag() ? 2 : 1;
 
+                // TODO this is where the magic happens
                 // Figure out how to count the alternative allele. If the damage is caused by oxidation of G
                 // during shearing (in non-rnaseq data), then we know that:
                 //     G>T observation is always in read 1
                 //     C>A observation is always in read 2
                 // But if the substitution is from other causes the distribution of A/T across R1/R2 will be
                 // random.
-                if (base == refBase) {
-                    if (baseAsRead == 'G' && read == 1) ++counts.oxidatedC;
-                    else if (baseAsRead == 'G' && read == 2) ++counts.controlC;
-                    else if (baseAsRead == 'C' && read == 1) ++counts.controlC;
-                    else if (baseAsRead == 'C' && read == 2) ++counts.oxidatedC;
-                } else if (base == altBase) {
-                    if (baseAsRead == 'T' && read == 1) ++counts.oxidatedA;
-                    else if (baseAsRead == 'T' && read == 2) ++counts.controlA;
-                    else if (baseAsRead == 'A' && read == 1) ++counts.controlA;
-                    else if (baseAsRead == 'A' && read == 2) ++counts.oxidatedA;
+                if (refBase == 'C') {
+                    if (base == 'C') {
+                        if (baseAsRead == 'G' && read == 1) ++counts.oxidatedC;
+                        else if (baseAsRead == 'G' && read == 2) ++counts.controlC;
+                        else if (baseAsRead == 'C' && read == 1) ++counts.controlC;
+                        else if (baseAsRead == 'C' && read == 2) ++counts.oxidatedC;
+                    } else if (base == 'A') {
+                        if (baseAsRead == 'T' && read == 1) ++counts.oxidatedA;
+                        else if (baseAsRead == 'T' && read == 2) ++counts.controlA;
+                        else if (baseAsRead == 'A' && read == 1) ++counts.controlA;
+                        else if (baseAsRead == 'A' && read == 2) ++counts.oxidatedA;
+                    } else if (base == 'G') {
+                        if (baseAsRead == 'G' && read == 1) ++counts.oxidatedG;
+                        else if (baseAsRead == 'G' && read == 2) ++counts.controlG;
+                        else if (baseAsRead == 'C' && read == 1) ++counts.controlG;
+                        else if (baseAsRead == 'C' && read == 2) ++counts.oxidatedG;
+                    } else if (base == 'T') {
+                        if (baseAsRead == 'T' && read == 1) ++counts.oxidatedT;
+                        else if (baseAsRead == 'T' && read == 2) ++counts.controlT;
+                        else if (baseAsRead == 'A' && read == 1) ++counts.controlT;
+                        else if (baseAsRead == 'A' && read == 2) ++counts.oxidatedT;
+                    }
                 }
-            }
+            } // TODO check if above is correct; then handle other bases
 
             return counts;
         }
