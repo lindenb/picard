@@ -167,6 +167,10 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         public double G_REF_OXO_ERROR_RATE;
         /** G_REF_OXO_ERROR_RATE expressed as a phred-scaled quality score. */
         public double G_REF_OXO_Q;
+
+
+
+
     }
 
     /**
@@ -397,6 +401,9 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         int total() { return controlC + oxidatedC + controlA + oxidatedA + controlG + oxidatedG + controlT + oxidatedT; }
     }
 
+
+
+
     /**
      * Class that calculated CpCG metrics for a specific library. TODO expand
      */
@@ -540,7 +547,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         else if (baseAsRead == 'A' && read == 2) ++counts.oxidatedT;
                     }
                 }
-            } // TODO check if above is correct; then handle other bases
+            } // TODO check if above is correct; then handle other refBases
 
             return counts;
         }
