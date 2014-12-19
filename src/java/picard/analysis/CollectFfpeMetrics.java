@@ -113,61 +113,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         /** The total number of basecalls observed at all sites. */
         public long TOTAL_BASES;
 
-        /** The number of reference alleles observed as C in read 1 and G in read 2. */
-        public long REF_NONOXO_BASES;
-        /** The number of reference alleles observed as G in read 1 and C in read 2. */
-        public long REF_OXO_BASES;
-        /** The total number of reference alleles observed */
-        public long REF_TOTAL_BASES;
-
-        /**
-         * The count of observed A basecalls at C reference positions and T basecalls
-         * at G reference bases that are correlated to instrument read number in a way
-         * that rules out oxidation as the cause
-         */
-        public long ALT_NONOXO_BASES;
-
-        /**
-         * The count of observed A basecalls at C reference positions and T basecalls
-         * at G reference bases that are correlated to instrument read number in a way
-         * that is consistent with oxidative damage.
-         */
-        public long ALT_OXO_BASES;
-
-        /** The oxo error rate, calculated as max(ALT_OXO_BASES - ALT_NONOXO_BASES, 1) / TOTAL_BASES */
-        public double OXIDATION_ERROR_RATE;
-
-        /** -10 * log10(OXIDATION_ERROR_RATE) */
-        public double OXIDATION_Q;
-
-        // Fields below this point are metrics that are calculated to see if there is oxidative damage that is
-        // biased toward the reference base - i.e. occurs more where the reference base is a C vs. a G or vice
-        // versa.
-
-        /** The number of ref basecalls observed at sites where the genome reference == C. */
-        public long C_REF_REF_BASES;
-        /** The number of ref basecalls observed at sites where the genome reference == G. */
-        public long G_REF_REF_BASES;
-        /** The number of alt (A/T) basecalls observed at sites where the genome reference == C. */
-        public long C_REF_ALT_BASES;
-        /** The number of alt (A/T) basecalls observed at sites where the genome reference == G. */
-        public long G_REF_ALT_BASES;
-
-        /**
-         * The rate at which C>A and G>T substitutions are observed at C reference sites above the expected rate if there
-         * were no bias between sites with a C reference base vs. a G reference base.
-         */
-        public double C_REF_OXO_ERROR_RATE;
-        /** C_REF_OXO_ERROR_RATE expressed as a phred-scaled quality score. */
-        public double C_REF_OXO_Q;
-        /**
-         * The rate at which C>A and G>T substitutions are observed at G reference sites above the expected rate if there
-         * were no bias between sites with a C reference base vs. a G reference base.
-         */
-        public double G_REF_OXO_ERROR_RATE;
-        /** G_REF_OXO_ERROR_RATE expressed as a phred-scaled quality score. */
-        public double G_REF_OXO_Q;
-
 
 
 
@@ -297,15 +242,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             final byte base = StringUtil.toUpperCase(bases[index]);
 
             // Get the reference context string
-            // TODO expand
-            final String context;
-            {
-                // the point of the reverse complement here is merely because makeContextStrings only generated C-contexts.
-                // however that's no longer the case, so we don't need it?
-                final String tmp = StringUtil.bytesToString(bases, index - CONTEXT_SIZE, 1 + (2 * CONTEXT_SIZE)).toUpperCase();
-                if (base == 'C') context = tmp;
-                else /* if (base == 'G') */ context = SequenceUtil.reverseComplement(tmp);
-            }
+            final String context = StringUtil.bytesToString(bases, index - CONTEXT_SIZE, 1 + (2 * CONTEXT_SIZE)).toUpperCase();
 
             final List<Calculator> calculatorsForContext = calculators.get(context);
             if (calculatorsForContext == null) continue; // happens if we get ambiguous (e.g. N) bases in the reference
@@ -339,7 +276,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private Set<String> makeContextStrings(final int contextSize) {
         final Set<String> contexts = new HashSet<String>();
 
-        // TODO should we limit this to say, C and T contexts?
         for (final byte[] kmer : generateAllKmers(2 * contextSize + 1)) {
            contexts.add(StringUtil.bytesToString(kmer));
         }
@@ -389,20 +325,12 @@ public class CollectFfpeMetrics extends CommandLineProgram {
      * A little class for counting alleles. TODO expand
      */
     private static class Counts {
-        int controlA;
-        int oxidatedA;
-        int controlC;
-        int oxidatedC;
-        int controlG;
-        int oxidatedG;
-        int controlT;
-        int oxidatedT;
 
-        int total() { return controlC + oxidatedC + controlA + oxidatedA + controlG + oxidatedG + controlT + oxidatedT; }
+        int total() {
+            // TODO
+            return 0;
+        }
     }
-
-
-
 
     /**
      * Class that calculated CpCG metrics for a specific library. TODO expand
@@ -413,14 +341,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
         // Things to be accumulated
         int sites = 0;
-        long refCcontrolA = 0;
-        long refCoxidatedA = 0;
-        long refCcontrolC = 0;
-        long refCoxidatedC = 0;
-        long refGcontrolA = 0;
-        long refGoxidatedA = 0;
-        long refGcontrolC = 0;
-        long refGoxidatedC = 0;
 
         Calculator(final String library, final String context) {
             this.library = library;
@@ -433,19 +353,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             if (counts.total() > 0) {
                 // Things calculated on all sites with coverage
                 this.sites++;
-                if (refBase == 'C') {
-                    this.refCcontrolA += counts.controlA;
-                    this.refCoxidatedA += counts.oxidatedA;
-                    this.refCcontrolC += counts.controlC;
-                    this.refCoxidatedC += counts.oxidatedC;
-                } else if (refBase == 'G') {
-                    this.refGcontrolA += counts.controlA;
-                    this.refGoxidatedA += counts.oxidatedA;
-                    this.refGcontrolC += counts.controlC;
-                    this.refGoxidatedC += counts.oxidatedC;
-                } else {
-                    throw new IllegalStateException("Reference bases other than G and C not supported.");
-                }
+
+                // TODO
             }
         }
 
@@ -454,38 +363,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             m.LIBRARY = this.library;
             m.CONTEXT = this.context;
             m.TOTAL_SITES = this.sites;
-            m.TOTAL_BASES = this.refCcontrolC + this.refCoxidatedC + this.refCcontrolA + this.refCoxidatedA +
-                    this.refGcontrolC + this.refGoxidatedC + this.refGcontrolA + this.refGoxidatedA;
-            m.REF_OXO_BASES = this.refCoxidatedC + refGoxidatedC;
-            m.REF_NONOXO_BASES = this.refCcontrolC + this.refGcontrolC;
-            m.REF_TOTAL_BASES = m.REF_OXO_BASES + m.REF_NONOXO_BASES;
-            m.ALT_NONOXO_BASES = this.refCcontrolA + this.refGcontrolA;
-            m.ALT_OXO_BASES = this.refCoxidatedA + this.refGoxidatedA;
-
-            /**
-             * Why do we calculate the oxo error rate using oxidatedA - controlA you ask?  We know that all the
-             * bases counted in oxidatedA are consistent with 8-oxo-G damage during shearing, but not all of them
-             * will have been caused by this. If we assume that C>A errors caused by other factors will occur randomly
-             * with respect to read1/read2, then we should see as many in the 8-oxo-G consistent state as not.  So we
-             * assume that controlA is half the story, and remove the other half from oxidatedA.
-             */
-            m.OXIDATION_ERROR_RATE = Math.max(m.ALT_OXO_BASES - m.ALT_NONOXO_BASES, 1) / (double) m.TOTAL_BASES;
-            m.OXIDATION_Q = -10 * log10(m.OXIDATION_ERROR_RATE);
-
-            /** Now look for things that have a reference base bias! */
-            m.C_REF_REF_BASES = this.refCcontrolC + this.refCoxidatedC;
-            m.G_REF_REF_BASES = this.refGcontrolC + this.refGoxidatedC;
-            m.C_REF_ALT_BASES = this.refCcontrolA + this.refCoxidatedA;
-            m.G_REF_ALT_BASES = this.refGcontrolA + this.refGoxidatedA;
-
-            final double cRefErrorRate = m.C_REF_ALT_BASES / (double) (m.C_REF_ALT_BASES + m.C_REF_REF_BASES);
-            final double gRefErrorRate = m.G_REF_ALT_BASES / (double) (m.G_REF_ALT_BASES + m.G_REF_REF_BASES);
-
-            m.C_REF_OXO_ERROR_RATE = Math.max(cRefErrorRate - gRefErrorRate, 1e-10);
-            m.G_REF_OXO_ERROR_RATE = Math.max(gRefErrorRate - cRefErrorRate, 1e-10);
-            m.C_REF_OXO_Q = -10 * log10(m.C_REF_OXO_ERROR_RATE);
-            m.G_REF_OXO_Q = -10 * log10(m.G_REF_OXO_ERROR_RATE);
-
+            // TODO
             return m;
         }
 
@@ -517,37 +395,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                 final byte baseAsRead = samrec.getReadNegativeStrandFlag() ? SequenceUtil.complement(base) : base;
                 final int read = samrec.getReadPairedFlag() && samrec.getSecondOfPairFlag() ? 2 : 1;
 
-                // TODO this is where the magic happens
-                // Figure out how to count the alternative allele. If the damage is caused by oxidation of G
-                // during shearing (in non-rnaseq data), then we know that:
-                //     G>T observation is always in read 1
-                //     C>A observation is always in read 2
-                // But if the substitution is from other causes the distribution of A/T across R1/R2 will be
-                // random.
-                if (refBase == 'C') {
-                    if (base == 'C') {
-                        if (baseAsRead == 'G' && read == 1) ++counts.oxidatedC;
-                        else if (baseAsRead == 'G' && read == 2) ++counts.controlC;
-                        else if (baseAsRead == 'C' && read == 1) ++counts.controlC;
-                        else if (baseAsRead == 'C' && read == 2) ++counts.oxidatedC;
-                    } else if (base == 'A') {
-                        if (baseAsRead == 'T' && read == 1) ++counts.oxidatedA;
-                        else if (baseAsRead == 'T' && read == 2) ++counts.controlA;
-                        else if (baseAsRead == 'A' && read == 1) ++counts.controlA;
-                        else if (baseAsRead == 'A' && read == 2) ++counts.oxidatedA;
-                    } else if (base == 'G') {
-                        if (baseAsRead == 'G' && read == 1) ++counts.oxidatedG;
-                        else if (baseAsRead == 'G' && read == 2) ++counts.controlG;
-                        else if (baseAsRead == 'C' && read == 1) ++counts.controlG;
-                        else if (baseAsRead == 'C' && read == 2) ++counts.oxidatedG;
-                    } else if (base == 'T') {
-                        if (baseAsRead == 'T' && read == 1) ++counts.oxidatedT;
-                        else if (baseAsRead == 'T' && read == 2) ++counts.controlT;
-                        else if (baseAsRead == 'A' && read == 1) ++counts.controlT;
-                        else if (baseAsRead == 'A' && read == 2) ++counts.oxidatedT;
-                    }
-                }
-            } // TODO check if above is correct; then handle other refBases
+                // TODO magic
+            }
 
             return counts;
         }
