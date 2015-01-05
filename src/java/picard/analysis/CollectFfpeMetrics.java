@@ -85,7 +85,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     @Option(doc = "When available, use original quality scores for filtering.")
     public boolean USE_OQ = true;
 
-    @Option(doc = "The number of context bases to include on each side of the assayed G/C base.")
+    @Option(doc = "The number of context bases to include on each side of the assayed base.")
     public int CONTEXT_SIZE = 1;
 
     @Option(doc = "The optional set of sequence contexts to restrict analysis to. If not supplied all contexts are analyzed.")
@@ -99,7 +99,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private static final String UNKNOWN_SAMPLE = "UnknownSample";
 
     /**
-     * Metrics class for outputs. TODO expand
+     * Metrics class for outputs.
      */
     public static final class CpcgMetrics extends MetricBase {
         /** The name of the sample being assayed. */
@@ -113,8 +113,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         /** The total number of basecalls observed at all sites. */
         public long TOTAL_BASES;
 
-
-
+        // TODO
 
     }
 
@@ -322,18 +321,19 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     }
 
     /**
-     * A little class for counting alleles. TODO expand
+     * A little class for counting alleles.
      */
     private static class Counts {
 
+        // TODO
+
         int total() {
-            // TODO
             return 0;
         }
     }
 
     /**
-     * Class that calculated CpCG metrics for a specific library. TODO expand
+     * Class that calculated CpCG metrics for a specific library.
      */
     private class Calculator {
         private final String library;
@@ -341,6 +341,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
         // Things to be accumulated
         int sites = 0;
+        // TODO
 
         Calculator(final String library, final String context) {
             this.library = library;
