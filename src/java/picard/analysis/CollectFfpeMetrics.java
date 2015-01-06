@@ -1,6 +1,5 @@
 package picard.analysis;
 
-import com.sun.jna.Library;
 import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.SAMRecord;
 import htsjdk.samtools.SamReader;
@@ -14,7 +13,6 @@ import htsjdk.samtools.reference.ReferenceSequenceFileWalker;
 import htsjdk.samtools.util.CloserUtil;
 import htsjdk.samtools.util.IOUtil;
 import htsjdk.samtools.util.IntervalList;
-import htsjdk.samtools.util.ListMap;
 import htsjdk.samtools.util.Log;
 import htsjdk.samtools.util.SamLocusIterator;
 import htsjdk.samtools.util.SequenceUtil;
@@ -52,7 +50,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     public File INPUT;
 
     @Option(shortName = StandardOptionDefinitions.OUTPUT_SHORT_NAME,
-            doc = "Location of output metrics file to write.")
+            doc = "Base path of output files to write.")
     public File OUTPUT;
 
     @Option(shortName = StandardOptionDefinitions.REFERENCE_SHORT_NAME,
@@ -132,9 +130,30 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         public double T_TO_G_QSCORE;
     }
 
-    public static class FfpeDetailMetrics extends FfpeSummaryMetrics {
+    public static class FfpeDetailMetrics extends MetricBase {
+        public String SAMPLE_ALIAS;
+        public String LIBRARY;
         public String CONTEXT;
-        // TODO more stuff?
+
+        public long TOTAL_SITES;
+        public long TOTAL_BASES;
+
+        public long ALT_A_BASES;
+        public long ALT_C_BASES;
+        public long ALT_G_BASES;
+        public long ALT_T_BASES;
+
+        public double A_ERROR_RATE;
+        public double C_ERROR_RATE;
+        public double G_ERROR_RATE;
+        public double T_ERROR_RATE;
+
+        public double A_QSCORE;
+        public double C_QSCORE;
+        public double G_QSCORE;
+        public double T_QSCORE;
+
+        // TODO p-values?
     }
 
     /**
@@ -189,15 +208,20 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     }
 
     /** Mimic of Oracle's nvl() - returns the first value if not null, otherwise the second value. */
-    private final <T> T nvl(final T value1, final T value2) {
+    private <T> T nvl(final T value1, final T value2) {
         if (value1 != null) return value1;
         else return value2;
     }
 
     @Override
     protected int doWork() {
+        final File SUMMARY_OUT = new File(OUTPUT + "ffpe_summary_metrics");
+        final File DETAILS_OUT = new File(OUTPUT + "ffpe_detail_metrics");
+
         IOUtil.assertFileIsReadable(INPUT);
-        IOUtil.assertFileIsWritable(OUTPUT);
+        IOUtil.assertFileIsWritable(SUMMARY_OUT);
+        IOUtil.assertFileIsWritable(DETAILS_OUT);
+
         if (INTERVALS != null) IOUtil.assertFileIsReadable(INTERVALS);
         IOUtil.assertFileIsReadable(REFERENCE_SEQUENCE);
 
@@ -213,7 +237,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
         // Setup the calculators
         final Set<String> contexts = CONTEXTS.isEmpty() ? makeContextStrings(CONTEXT_SIZE) : CONTEXTS;
-        final LibraryLevelCounts counts = new LibraryLevelCounts(libraries, contexts);
+        final FfpeCalculator counts = new FfpeCalculator(libraries, contexts);
 
         // Load up dbSNP if available
         log.info("Loading dbSNP File: " + DB_SNP);
@@ -254,7 +278,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
             // Get the reference context string and perform counting
             final String context = StringUtil.bytesToString(bases, index - CONTEXT_SIZE, 1 + (2 * CONTEXT_SIZE)).toUpperCase();
-            counts.computeAlleleFraction(info, context);
+            counts.countAlleles(info, context);
 
             // See if we need to stop
             if (++sites % 100 == 0) {
@@ -267,10 +291,12 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             if (sites >= STOP_AFTER) break;
         }
 
-        final MetricsFile<FfpeSummaryMetrics, Integer> file = getMetricsFile();
-        // TODO write metrics
+        final MetricsFile<FfpeSummaryMetrics, Integer> summaryMetricsFile = getMetricsFile();
+        final MetricsFile<FfpeDetailMetrics, Integer> detailMetricsFile = getMetricsFile();
+        // TODO add metrics
 
-        file.write(OUTPUT);
+        summaryMetricsFile.write(SUMMARY_OUT);
+        detailMetricsFile.write(DETAILS_OUT);
         CloserUtil.close(in);
         return 0;
     }
@@ -323,11 +349,16 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         return -1;
     }
 
-    private static class BaseCounts {
+    private static class AlleleCounter {
+        private final byte refBase;
         private long A = 0;
         private long C = 0;
         private long G = 0;
         private long T = 0;
+
+        private AlleleCounter(final byte refBase) {
+            this.refBase = refBase;
+        }
 
         private void add(byte base) {
             switch (base) {
@@ -340,43 +371,42 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         }
 
         private long total() { return A + C + G + T; }
-    }
 
-    private static class ContextLevelCounts {
-        private final Map<String, BaseCounts> contextLevelCounts = new HashMap<String, BaseCounts>();
-
-        private ContextLevelCounts(final Iterable<String> contexts) {
-            for (final String cxt : contexts) this.contextLevelCounts.put(cxt, new BaseCounts());
-        }
-
-        private void add(byte base, String context) {
-            if (this.contextLevelCounts.containsKey(context)) {
-                this.contextLevelCounts.get(context).add(base);
-            }
-        }
-
-        private FfpeDetailMetrics finish() {
-            final FfpeDetailMetrics m = new FfpeDetailMetrics();
-            // TODO
-            return m;
-        }
+        private long altA() { return (refBase == 'A') ? -1 : A; }
+        private long altC() { return (refBase == 'C') ? -1 : C; }
+        private long altG() { return (refBase == 'G') ? -1 : G; }
+        private long altT() { return (refBase == 'T') ? -1 : T; }
     }
 
     /**
      * A library-level accumulator for state transitions.
      */
-    private class LibraryLevelCounts {
-        private final Map<String, ContextLevelCounts> libraryLevelCounts =  new HashMap<String, ContextLevelCounts>();
+    private class FfpeCalculator {
+        private final Set<String> acceptedContexts;
+        private final Set<String> acceptedLibraries;
+        private final Map<String, Map<String, AlleleCounter>> countsPerLibrary;
 
-        private LibraryLevelCounts(final Iterable<String> libraries, final Iterable<String> contexts) {
-            for (String lib : libraries) this.libraryLevelCounts.put(lib, new ContextLevelCounts(contexts));
+        private FfpeCalculator(final Set<String> libraries, final Set<String> contexts) {
+            this.acceptedLibraries = libraries;
+            this.acceptedContexts = contexts;
+
+            // TODO make this less ugly?
+            this.countsPerLibrary = new HashMap<String, Map<String, AlleleCounter>>();
+            for (final String library : libraries) {
+                final Map<String, AlleleCounter> countsPerContext = new HashMap<String, AlleleCounter>();
+                for (final String context : contexts) {
+                    final byte refBase = (byte) context.charAt(CONTEXT_SIZE);
+                    countsPerContext.put(context, new AlleleCounter(refBase));
+                }
+                this.countsPerLibrary.put(library, countsPerContext);
+            }
         }
 
         /**
          * This is where we actually do the counting - examine all reads overlapping the given reference locus, and
          * count up the observed genotypes.
          */
-        private void computeAlleleFraction(final SamLocusIterator.LocusInfo info, final String refContext) {
+        private void countAlleles(final SamLocusIterator.LocusInfo info, final String refContext) {
             for (final SamLocusIterator.RecordAndOffset rec : info.getRecordAndPositions()) {
                 final byte qual;
                 final SAMRecord samrec = rec.getRecord();
@@ -391,9 +421,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
                 // Skip if below qual
                 if (qual < MINIMUM_QUALITY_SCORE) continue;
-
-                // Get library
-                final String library = nvl(samrec.getReadGroup().getLibrary(), UNKNOWN_LIBRARY);
 
                 final String originalTemplateContext;
                 final byte calledBase;
@@ -413,17 +440,47 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                     calledBase = rec.getReadBase();
                 }
 
+                final String library = nvl(samrec.getReadGroup().getLibrary(), UNKNOWN_LIBRARY);
+
+                // Skip if context or library is unknown
+                if (!acceptedLibraries.contains(library)) continue;
+                if (!acceptedContexts.contains(originalTemplateContext)) continue;
+
                 // Count the base
-                this.libraryLevelCounts.get(library).add(calledBase, originalTemplateContext);
+                this.countsPerLibrary.get(library).get(originalTemplateContext).add(calledBase);
             }
         }
 
-        private FfpeSummaryMetrics finish() {
-            final FfpeSummaryMetrics m = new FfpeSummaryMetrics();
-            // TODO
-            return m;
+        private void writeMetrics(final String sampleAlias) {
+            List<FfpeSummaryMetrics> summaryMetrics = new ArrayList<FfpeSummaryMetrics>();
+            List<FfpeDetailMetrics> detailMetrics = new ArrayList<FfpeDetailMetrics>();
+
+
+            /**
+             * for each library:
+             *     for each base:
+             *         for each ref context centered on that base:
+             *             (1) counts of each alt base
+             *             (2) error rates / q-values for each alt base based on (1)
+             *         (3) error rates / q-values for each alt base based on sum of (1) across contexts
+             *
+             */
+            for (String library : this.acceptedLibraries) {
+
+                for (String context : this.acceptedContexts) {
+                    FfpeDetailMetrics detail = new FfpeDetailMetrics();
+                    detail.SAMPLE_ALIAS = sampleAlias;
+                    detail.LIBRARY = library;
+                    detail.CONTEXT = context;
+
+                    // TODO
+                }
+
+                FfpeSummaryMetrics summary = new FfpeSummaryMetrics();
+                summary.SAMPLE_ALIAS = sampleAlias;
+                summary.LIBRARY = library;
+                // TODO
+            }
         }
-
     }
-
 }
