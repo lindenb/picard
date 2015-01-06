@@ -1,5 +1,6 @@
 package picard.analysis;
 
+import com.sun.jna.Library;
 import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.SAMRecord;
 import htsjdk.samtools.SamReader;
@@ -28,12 +29,12 @@ import picard.util.DbSnpBitSetUtil;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
-
-import static java.lang.Math.log10;
 
 /**
  * TODO javadoc
@@ -98,23 +99,42 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private static final String UNKNOWN_LIBRARY = "UnknownLibrary";
     private static final String UNKNOWN_SAMPLE = "UnknownSample";
 
-    /**
-     * Metrics class for outputs.
-     */
-    public static final class CpcgMetrics extends MetricBase {
-        /** The name of the sample being assayed. */
+    public static class FfpeSummaryMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
-        /** The name of the library being assayed. */
         public String LIBRARY;
-        /** The sequence context being reported on. */
+
+        public double A_TO_C_ERROR_RATE;
+        public double A_TO_C_QSCORE;
+        public double A_TO_G_ERROR_RATE;
+        public double A_TO_G_QSCORE;
+        public double A_TO_T_ERROR_RATE;
+        public double A_TO_T_QSCORE;
+
+        public double C_TO_A_ERROR_RATE;
+        public double C_TO_A_QSCORE;
+        public double C_TO_G_ERROR_RATE;
+        public double C_TO_G_QSCORE;
+        public double C_TO_T_ERROR_RATE;
+        public double C_TO_T_QSCORE;
+
+        public double G_TO_A_ERROR_RATE;
+        public double G_TO_A_QSCORE;
+        public double G_TO_C_ERROR_RATE;
+        public double G_TO_C_QSCORE;
+        public double G_TO_T_ERROR_RATE;
+        public double G_TO_T_QSCORE;
+
+        public double T_TO_A_ERROR_RATE;
+        public double T_TO_A_QSCORE;
+        public double T_TO_C_ERROR_RATE;
+        public double T_TO_C_QSCORE;
+        public double T_TO_G_ERROR_RATE;
+        public double T_TO_G_QSCORE;
+    }
+
+    public static class FfpeDetailMetrics extends FfpeSummaryMetrics {
         public String CONTEXT;
-        /** The total number of sites that had at least one base covering them. */
-        public int TOTAL_SITES;
-        /** The total number of basecalls observed at all sites. */
-        public long TOTAL_BASES;
-
-        // TODO
-
+        // TODO more stuff?
     }
 
     /**
@@ -193,12 +213,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
         // Setup the calculators
         final Set<String> contexts = CONTEXTS.isEmpty() ? makeContextStrings(CONTEXT_SIZE) : CONTEXTS;
-        final ListMap<String, Calculator> calculators = new ListMap<String, Calculator>();
-        for (final String context : contexts) {
-            for (final String library : libraries) {
-                calculators.add(context, new Calculator(library, context));
-            }
-        }
+        final LibraryLevelCounts counts = new LibraryLevelCounts(libraries, contexts);
 
         // Load up dbSNP if available
         log.info("Loading dbSNP File: " + DB_SNP);
@@ -233,19 +248,13 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             final int index = pos - 1;
             if (dbSnp != null && dbSnp.isDbSnpSite(chrom, pos)) continue;
 
-            // Skip sites at the end of chromosomes 
+            // Skip sites at the end of chromosomes
             final byte[] bases = refWalker.get(info.getSequenceIndex()).getBases();
             if (pos < 3 || pos > bases.length - 3) continue;
 
-            // Get the reference base at this locus
-            final byte base = StringUtil.toUpperCase(bases[index]);
-
-            // Get the reference context string
+            // Get the reference context string and perform counting
             final String context = StringUtil.bytesToString(bases, index - CONTEXT_SIZE, 1 + (2 * CONTEXT_SIZE)).toUpperCase();
-
-            final List<Calculator> calculatorsForContext = calculators.get(context);
-            if (calculatorsForContext == null) continue; // happens if we get ambiguous (e.g. N) bases in the reference
-            for (final Calculator calc : calculatorsForContext) calc.accept(info, base);
+            counts.computeAlleleFraction(info, context);
 
             // See if we need to stop
             if (++sites % 100 == 0) {
@@ -258,14 +267,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             if (sites >= STOP_AFTER) break;
         }
 
-        final MetricsFile<CpcgMetrics, Integer> file = getMetricsFile();
-        for (final List<Calculator> calcs : calculators.values()) {
-            for (final Calculator calc : calcs) {
-                final CpcgMetrics m = calc.finish();
-                m.SAMPLE_ALIAS = StringUtil.join(",", new ArrayList<String>(samples));
-                file.addMetric(m);
-            }
-        }
+        final MetricsFile<FfpeSummaryMetrics, Integer> file = getMetricsFile();
+        // TODO write metrics
 
         file.write(OUTPUT);
         CloserUtil.close(in);
@@ -320,61 +323,60 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         return -1;
     }
 
-    /**
-     * A little class for counting alleles.
-     */
-    private static class Counts {
+    private static class BaseCounts {
+        private long A = 0;
+        private long C = 0;
+        private long G = 0;
+        private long T = 0;
 
-        // TODO
+        private void add(byte base) {
+            switch (base) {
+                case 'A': this.A++; break;
+                case 'C': this.C++; break;
+                case 'G': this.G++; break;
+                case 'T': this.T++; break;
+                default: throw new IllegalStateException(base + " is not a valid DNA base");
+            }
+        }
 
-        int total() {
-            return 0;
+        private long total() { return A + C + G + T; }
+    }
+
+    private static class ContextLevelCounts {
+        private final Map<String, BaseCounts> contextLevelCounts = new HashMap<String, BaseCounts>();
+
+        private ContextLevelCounts(final Iterable<String> contexts) {
+            for (final String cxt : contexts) this.contextLevelCounts.put(cxt, new BaseCounts());
+        }
+
+        private void add(byte base, String context) {
+            if (this.contextLevelCounts.containsKey(context)) {
+                this.contextLevelCounts.get(context).add(base);
+            }
+        }
+
+        private FfpeDetailMetrics finish() {
+            final FfpeDetailMetrics m = new FfpeDetailMetrics();
+            // TODO
+            return m;
         }
     }
 
     /**
-     * Class that calculated CpCG metrics for a specific library.
+     * A library-level accumulator for state transitions.
      */
-    private class Calculator {
-        private final String library;
-        private final String context;
+    private class LibraryLevelCounts {
+        private final Map<String, ContextLevelCounts> libraryLevelCounts =  new HashMap<String, ContextLevelCounts>();
 
-        // Things to be accumulated
-        int sites = 0;
-        // TODO
-
-        Calculator(final String library, final String context) {
-            this.library = library;
-            this.context = context;
-        }
-
-        void accept(final SamLocusIterator.LocusInfo info, final byte refBase) {
-            final Counts counts = computeAlleleFraction(info, refBase);
-
-            if (counts.total() > 0) {
-                // Things calculated on all sites with coverage
-                this.sites++;
-
-                // TODO
-            }
-        }
-
-        CpcgMetrics finish() {
-            final CpcgMetrics m = new CpcgMetrics();
-            m.LIBRARY = this.library;
-            m.CONTEXT = this.context;
-            m.TOTAL_SITES = this.sites;
-            // TODO
-            return m;
+        private LibraryLevelCounts(final Iterable<String> libraries, final Iterable<String> contexts) {
+            for (String lib : libraries) this.libraryLevelCounts.put(lib, new ContextLevelCounts(contexts));
         }
 
         /**
          * This is where we actually do the counting - examine all reads overlapping the given reference locus, and
          * count up the observed genotypes.
          */
-        private Counts computeAlleleFraction(final SamLocusIterator.LocusInfo info, final byte refBase) {
-            final Counts counts = new Counts();
-
+        private void computeAlleleFraction(final SamLocusIterator.LocusInfo info, final String refContext) {
             for (final SamLocusIterator.RecordAndOffset rec : info.getRecordAndPositions()) {
                 final byte qual;
                 final SAMRecord samrec = rec.getRecord();
@@ -387,19 +389,41 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                     qual = rec.getBaseQuality();
                 }
 
-                // Skip if below qual, or if library isn't a match
+                // Skip if below qual
                 if (qual < MINIMUM_QUALITY_SCORE) continue;
-                if (!this.library.equals(nvl(samrec.getReadGroup().getLibrary(), UNKNOWN_LIBRARY))) continue;
 
-                // Get the read base, and get it in "as read" orientation
-                final byte base = rec.getReadBase();
-                final byte baseAsRead = samrec.getReadNegativeStrandFlag() ? SequenceUtil.complement(base) : base;
-                final int read = samrec.getReadPairedFlag() && samrec.getSecondOfPairFlag() ? 2 : 1;
+                // Get library
+                final String library = nvl(samrec.getReadGroup().getLibrary(), UNKNOWN_LIBRARY);
 
-                // TODO magic
+                final String originalTemplateContext;
+                final byte calledBase;
+                /**
+                 * Remember that if the read is aligned to the negative strand, the reported ref + call bases must be reverse complemented
+                 * to reflect the original sequence. Likewise if the read is second in a pair (and thus derived from the reverse template),
+                 * the ref + call bases must be revc'd to reflect the forward template. If both of these conditions are true, they cancel
+                 * each other out (hence the XOR).
+                 */
+                final boolean isNegativeStrand = samrec.getReadNegativeStrandFlag();
+                final boolean isReadTwo = samrec.getReadPairedFlag() && samrec.getSecondOfPairFlag();
+                if (isNegativeStrand ^ isReadTwo) {
+                    originalTemplateContext = SequenceUtil.reverseComplement(refContext);
+                    calledBase = SequenceUtil.complement(rec.getReadBase());
+                } else {
+                    originalTemplateContext = refContext;
+                    calledBase = rec.getReadBase();
+                }
+
+                // Count the base
+                this.libraryLevelCounts.get(library).add(calledBase, originalTemplateContext);
             }
-
-            return counts;
         }
+
+        private FfpeSummaryMetrics finish() {
+            final FfpeSummaryMetrics m = new FfpeSummaryMetrics();
+            // TODO
+            return m;
+        }
+
     }
+
 }
