@@ -131,6 +131,9 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         public double T_TO_G_QSCORE;
     }
 
+    /**
+     * Metrics for a single context.
+     */
     public static class FfpeDetailMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
@@ -465,22 +468,19 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                 for (String context : this.acceptedContexts) {
 
                     byte refBase = (byte) context.charAt(CONTEXT_SIZE);
-                    AlleleCounter supportingCounts = this.countsPerLibrary.get(library).get(context);
-                    AlleleCounter opposingCounts = this.countsPerLibrary.get(library).get(SequenceUtil.reverseComplement(context));
+                    AlleleCounter forwardCounts = this.countsPerLibrary.get(library).get(context);
+                    AlleleCounter reverseCounts = this.countsPerLibrary.get(library).get(SequenceUtil.reverseComplement(context));
 
                     FfpeDetailMetrics detail = new FfpeDetailMetrics();
                     detail.SAMPLE_ALIAS = sampleAlias;
                     detail.LIBRARY = library;
                     detail.CONTEXT = context;
 
-                    /**
-                     * Here's where the magic happens.
-                     */
-                    detail.A_ERROR_RATE = Math.max(1, supportingCounts.A - opposingCounts.T) / (double) (supportingCounts.A + opposingCounts.T);
-                    detail.C_ERROR_RATE = Math.max(1, supportingCounts.C - opposingCounts.G) / (double) (supportingCounts.C + opposingCounts.G);
-                    detail.G_ERROR_RATE = Math.max(1, supportingCounts.G - opposingCounts.C) / (double) (supportingCounts.G + opposingCounts.C);
-                    detail.T_ERROR_RATE = Math.max(1, supportingCounts.T - opposingCounts.A) / (double) (supportingCounts.T + opposingCounts.A);
-
+                    System.out.println("Analyzing context: " + context);
+                    System.out.println(forwardCounts.A);
+                    System.out.println(forwardCounts.T);
+                    System.out.println(reverseCounts.A);
+                    System.out.println(reverseCounts.T);
 
                     // TODO
                 }
