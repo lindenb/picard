@@ -483,7 +483,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                     log.info(forwardCounts.T);
                     log.info(reverseCounts.A);
                     log.info(reverseCounts.T);
-
+                    log.info(forwardCounts.total());
+                    log.info(reverseCounts.total());
                     // TODO
                 }
 
