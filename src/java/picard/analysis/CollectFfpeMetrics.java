@@ -87,7 +87,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     @Option(doc = "The number of context bases to include on each side of the assayed base.")
     public int CONTEXT_SIZE = 1;
 
-    @Option(doc = "The optional set of sequence contexts to restrict analysis to. If not supplied all contexts are analyzed.")
+    @Option(doc = "The optional set of sequence contexts to restrict analysis to. Their reverse complements will also be analyzed, " +
+            "even if not specified here. If not supplied all contexts are analyzed.")
     public Set<String> CONTEXTS = new HashSet<String>();
 
     @Option(doc = "For debugging purposes: stop after visiting this many sites with at least 1X coverage.")
@@ -137,11 +138,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
         public long TOTAL_SITES;
         public long TOTAL_BASES;
-
-        public long ALT_A_BASES;
-        public long ALT_C_BASES;
-        public long ALT_G_BASES;
-        public long ALT_T_BASES;
 
         public double A_ERROR_RATE;
         public double C_ERROR_RATE;
@@ -235,8 +231,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             libraries.add(nvl(rec.getLibrary(), UNKNOWN_LIBRARY));
         }
 
-        // Setup the calculators
-        final Set<String> contexts = CONTEXTS.isEmpty() ? makeContextStrings(CONTEXT_SIZE) : CONTEXTS;
+        // Setup the calculator
+        final Set<String> contexts = CONTEXTS.isEmpty() ? makeContextStrings(CONTEXT_SIZE) : includeReverseComplements(CONTEXTS);
         final FfpeCalculator counts = new FfpeCalculator(libraries, contexts);
 
         // Load up dbSNP if available
@@ -301,6 +297,19 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         return 0;
     }
 
+    /**
+     * Little method to expand a set of sequences to include all reverse complements.
+     * Necessary if a user manually specifies a set of contexts, due to various symmetries that the analysis depends on.
+     */
+    private Set<String> includeReverseComplements(final Set<String> sequences) {
+        Set<String> all = new HashSet<String>();
+        for (String seq : sequences) {
+            all.add(seq);
+            all.add(SequenceUtil.reverseComplement(seq));
+        }
+        return all;
+    }
+
     private Set<String> makeContextStrings(final int contextSize) {
         final Set<String> contexts = new HashSet<String>();
 
@@ -350,15 +359,10 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     }
 
     private static class AlleleCounter {
-        private final byte refBase;
         private long A = 0;
         private long C = 0;
         private long G = 0;
         private long T = 0;
-
-        private AlleleCounter(final byte refBase) {
-            this.refBase = refBase;
-        }
 
         private void add(byte base) {
             switch (base) {
@@ -371,11 +375,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         }
 
         private long total() { return A + C + G + T; }
-
-        private long altA() { return (refBase == 'A') ? -1 : A; }
-        private long altC() { return (refBase == 'C') ? -1 : C; }
-        private long altG() { return (refBase == 'G') ? -1 : G; }
-        private long altT() { return (refBase == 'T') ? -1 : T; }
     }
 
     /**
@@ -395,8 +394,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             for (final String library : libraries) {
                 final Map<String, AlleleCounter> countsPerContext = new HashMap<String, AlleleCounter>();
                 for (final String context : contexts) {
-                    final byte refBase = (byte) context.charAt(CONTEXT_SIZE);
-                    countsPerContext.put(context, new AlleleCounter(refBase));
+                    countsPerContext.put(context, new AlleleCounter());
                 }
                 this.countsPerLibrary.put(library, countsPerContext);
             }
@@ -422,6 +420,11 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                 // Skip if below qual
                 if (qual < MINIMUM_QUALITY_SCORE) continue;
 
+                // Skip if context or library is unknown
+                final String library = nvl(samrec.getReadGroup().getLibrary(), UNKNOWN_LIBRARY);
+                if (!acceptedLibraries.contains(library)) continue;
+                if (!acceptedContexts.contains(refContext)) continue;
+
                 final String originalTemplateContext;
                 final byte calledBase;
                 /**
@@ -440,12 +443,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                     calledBase = rec.getReadBase();
                 }
 
-                final String library = nvl(samrec.getReadGroup().getLibrary(), UNKNOWN_LIBRARY);
-
-                // Skip if context or library is unknown
-                if (!acceptedLibraries.contains(library)) continue;
-                if (!acceptedContexts.contains(originalTemplateContext)) continue;
-
                 // Count the base
                 this.countsPerLibrary.get(library).get(originalTemplateContext).add(calledBase);
             }
@@ -454,7 +451,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         private void writeMetrics(final String sampleAlias) {
             List<FfpeSummaryMetrics> summaryMetrics = new ArrayList<FfpeSummaryMetrics>();
             List<FfpeDetailMetrics> detailMetrics = new ArrayList<FfpeDetailMetrics>();
-
 
             /**
              * for each library:
@@ -466,12 +462,25 @@ public class CollectFfpeMetrics extends CommandLineProgram {
              *
              */
             for (String library : this.acceptedLibraries) {
-
                 for (String context : this.acceptedContexts) {
+
+                    byte refBase = (byte) context.charAt(CONTEXT_SIZE);
+                    AlleleCounter supportingCounts = this.countsPerLibrary.get(library).get(context);
+                    AlleleCounter opposingCounts = this.countsPerLibrary.get(library).get(SequenceUtil.reverseComplement(context));
+
                     FfpeDetailMetrics detail = new FfpeDetailMetrics();
                     detail.SAMPLE_ALIAS = sampleAlias;
                     detail.LIBRARY = library;
                     detail.CONTEXT = context;
+
+                    /**
+                     * Here's where the magic happens.
+                     */
+                    detail.A_ERROR_RATE = Math.max(1, supportingCounts.A - opposingCounts.T) / (double) (supportingCounts.A + opposingCounts.T);
+                    detail.C_ERROR_RATE = Math.max(1, supportingCounts.C - opposingCounts.G) / (double) (supportingCounts.C + opposingCounts.G);
+                    detail.G_ERROR_RATE = Math.max(1, supportingCounts.G - opposingCounts.C) / (double) (supportingCounts.G + opposingCounts.C);
+                    detail.T_ERROR_RATE = Math.max(1, supportingCounts.T - opposingCounts.A) / (double) (supportingCounts.T + opposingCounts.A);
+
 
                     // TODO
                 }
