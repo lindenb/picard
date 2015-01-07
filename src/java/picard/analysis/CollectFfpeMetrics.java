@@ -294,6 +294,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         final MetricsFile<FfpeDetailMetrics, Integer> detailMetricsFile = getMetricsFile();
         // TODO add metrics
 
+        counts.writeMetrics(StringUtil.join(",", samples));
+
         summaryMetricsFile.write(SUMMARY_OUT);
         detailMetricsFile.write(DETAILS_OUT);
         CloserUtil.close(in);
