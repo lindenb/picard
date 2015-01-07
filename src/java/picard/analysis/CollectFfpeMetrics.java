@@ -214,8 +214,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
     @Override
     protected int doWork() {
-        final File SUMMARY_OUT = new File(OUTPUT + "ffpe_summary_metrics");
-        final File DETAILS_OUT = new File(OUTPUT + "ffpe_detail_metrics");
+        final File SUMMARY_OUT = new File(OUTPUT + ".ffpe_summary_metrics");
+        final File DETAILS_OUT = new File(OUTPUT + ".ffpe_detail_metrics");
 
         IOUtil.assertFileIsReadable(INPUT);
         IOUtil.assertFileIsWritable(SUMMARY_OUT);
@@ -476,11 +476,11 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                     detail.LIBRARY = library;
                     detail.CONTEXT = context;
 
-                    System.out.println("Analyzing context: " + context);
-                    System.out.println(forwardCounts.A);
-                    System.out.println(forwardCounts.T);
-                    System.out.println(reverseCounts.A);
-                    System.out.println(reverseCounts.T);
+                    log.info("Analyzing context: " + context);
+                    log.info(forwardCounts.A);
+                    log.info(forwardCounts.T);
+                    log.info(reverseCounts.A);
+                    log.info(reverseCounts.T);
 
                     // TODO
                 }
