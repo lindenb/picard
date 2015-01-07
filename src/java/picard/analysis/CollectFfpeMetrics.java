@@ -480,11 +480,10 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
                     log.info("Analyzing context: " + context);
                     log.info(forwardCounts.A);
+                    log.info(forwardCounts.C);
+                    log.info(forwardCounts.G);
                     log.info(forwardCounts.T);
-                    log.info(reverseCounts.A);
-                    log.info(reverseCounts.T);
                     log.info(forwardCounts.total());
-                    log.info(reverseCounts.total());
                     // TODO
                 }
 
