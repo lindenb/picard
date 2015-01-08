@@ -11,13 +11,13 @@ import htsjdk.samtools.metrics.MetricBase;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.reference.ReferenceSequenceFileWalker;
 import htsjdk.samtools.util.CloserUtil;
+import htsjdk.samtools.util.CollectionUtil;
 import htsjdk.samtools.util.IOUtil;
 import htsjdk.samtools.util.IntervalList;
 import htsjdk.samtools.util.Log;
 import htsjdk.samtools.util.SamLocusIterator;
 import htsjdk.samtools.util.SequenceUtil;
 import htsjdk.samtools.util.StringUtil;
-import it.unimi.dsi.fastutil.Hash;
 import picard.cmdline.CommandLineProgram;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.Option;
@@ -100,6 +100,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private final Log log = Log.getInstance(CollectFfpeMetrics.class);
     private static final String UNKNOWN_LIBRARY = "UnknownLibrary";
     private static final String UNKNOWN_SAMPLE = "UnknownSample";
+    private static final String ALL_CONTEXTS = "***";
     private static final byte[] BASES = {'A', 'C', 'G', 'T'};
 
     public static class FfpeSummaryMetrics extends MetricBase {
@@ -124,7 +125,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     }
 
     /**
-     * Metrics for a specific mutation type at a specific context sequence.
+     * Metrics for a specific mutation type, possibly limited to a specific context.
      */
     public static class FfpeDetailMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
@@ -143,6 +144,25 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         public double ERROR_RATE;
         public double QSCORE;
         // TODO p-value?
+
+        /**
+         * Compute error rate and Phred-scaled quality score given the observed counts.
+         * Due to the symmetry of the problem, half of the error rates will be negative.
+         * Instead of reporting these as-is, we effectively set them to zero, suggesting
+         * that there is no evidence for that particular artifact.
+         *
+         * What's really happening is that each artifact is confounded by the presence
+         * of another (its reverse complement). However from a chemistry perspective it
+         * seems safe to assume that both artifacts won't occur significantly within the
+         * same prepped library.
+         */
+        private void calculateDerivedStatistics() {
+            // TODO fix divide by zero edge case
+            final double rawErrorRate = (this.FWD_REF_ALT_BASES - this.REV_REF_ALT_BASES)
+                    / (double) (this.FWD_REF_REF_BASES + this.FWD_REF_ALT_BASES + this.REV_REF_REF_BASES + this.REV_REF_ALT_BASES);
+            this.ERROR_RATE = Math.max(rawErrorRate, 1e-10);
+            this.QSCORE = -10 * log10(this.ERROR_RATE);
+        }
     }
 
     /**
@@ -193,6 +213,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             }
         }
 
+        if (CONTEXT_SIZE < 0) messages.add("CONTEXT_SIZE cannot be negative");
+
         return messages.isEmpty() ? null : messages.toArray(new String[messages.size()]);
     }
 
@@ -225,7 +247,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         }
 
         // Setup the calculator
-        final Set<String> contexts = CONTEXTS.isEmpty() ? makeContextStrings(CONTEXT_SIZE) : includeReverseComplements(CONTEXTS);
+        final int contextLength = (2 * CONTEXT_SIZE) + 1;
+        final Set<String> contexts = CONTEXTS.isEmpty() ? makeContextStrings(contextLength) : includeReverseComplements(CONTEXTS);
         final FfpeCalculator counts = new FfpeCalculator(libraries, contexts);
 
         // Load up dbSNP if available
@@ -254,6 +277,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         long nextLogTime = 0;
         int sites = 0;
 
+        // Iterate over reference loci
         for (final SamLocusIterator.LocusInfo info : iterator) {
             // Skip dbSNP sites
             final String chrom = info.getSequenceName();
@@ -263,10 +287,10 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
             // Skip sites at the end of chromosomes
             final byte[] bases = refWalker.get(info.getSequenceIndex()).getBases();
-            if (pos < 3 || pos > bases.length - 3) continue;
+            if (pos < contextLength || pos > bases.length - contextLength) continue;
 
             // Get the reference context string and perform counting
-            final String context = StringUtil.bytesToString(bases, index - CONTEXT_SIZE, 1 + (2 * CONTEXT_SIZE)).toUpperCase();
+            final String context = StringUtil.bytesToString(bases, index - CONTEXT_SIZE, contextLength).toUpperCase();
             if (contexts.contains(context)) counts.countAlleles(info, context);
 
             // See if we need to stop
@@ -280,10 +304,16 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             if (sites >= STOP_AFTER) break;
         }
 
+        // Finish up and write metrics
         final MetricsFile<FfpeSummaryMetrics, Integer> summaryMetricsFile = getMetricsFile();
         final MetricsFile<FfpeDetailMetrics, Integer> detailMetricsFile = getMetricsFile();
-        // TODO add metrics
-
+        final String sampleAlias = StringUtil.join(",", new ArrayList<String>(samples));
+        final List<LibraryLevelMetrics> allMetrics = counts.finalize(sampleAlias);
+        for (final LibraryLevelMetrics llm : allMetrics) {
+            for (final FfpeDetailMetrics clm : llm.contextLevelMetrics) detailMetricsFile.addMetric(clm);
+            for (final FfpeDetailMetrics alm : llm.artifactLevelMetrics) detailMetricsFile.addMetric(alm);
+            summaryMetricsFile.addMetric(llm.summaryMetrics);
+        }
         summaryMetricsFile.write(SUMMARY_OUT);
         detailMetricsFile.write(DETAILS_OUT);
         CloserUtil.close(in);
@@ -292,7 +322,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
     /**
      * Little method to expand a set of sequences to include all reverse complements.
-     * Necessary if a user manually specifies a set of contexts, due to various symmetries that the analysis depends on.
+     * Necessary if a user manually specifies a set of contexts, due to symmetries that the analysis depends on.
      */
     private Set<String> includeReverseComplements(final Set<String> sequences) {
         final Set<String> all = new HashSet<String>();
@@ -303,10 +333,10 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         return all;
     }
 
-    private Set<String> makeContextStrings(final int contextSize) {
+    private Set<String> makeContextStrings(final int length) {
         final Set<String> contexts = new HashSet<String>();
 
-        for (final byte[] kmer : generateAllKmers(2 * contextSize + 1)) {
+        for (final byte[] kmer : generateAllKmers(length)) {
            contexts.add(StringUtil.bytesToString(kmer));
         }
 
@@ -350,89 +380,146 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         return -1;
     }
 
-    private class BaseMap {
-        private final Map<Byte, Long> map;
+    /** A container for metrics at the per-library level. */
+    private class LibraryLevelMetrics {
+        protected final List<FfpeDetailMetrics> contextLevelMetrics;
+        protected final List<FfpeDetailMetrics> artifactLevelMetrics;
+        protected final FfpeSummaryMetrics summaryMetrics;
 
-        private BaseMap() {
-            this.map = new HashMap<Byte, Long>();
-            for (final byte base : BASES) this.map.put(base, 0l);
+        private LibraryLevelMetrics(final List<FfpeDetailMetrics> contextLevelMetrics,
+                                    final List<FfpeDetailMetrics> artifactLevelMetrics,
+                                    final FfpeSummaryMetrics summaryMetrics) {
+            this.contextLevelMetrics = contextLevelMetrics;
+            this.artifactLevelMetrics = artifactLevelMetrics;
+            this.summaryMetrics = summaryMetrics;
         }
-
-        private void add(final byte base) {
-            this.map.put(base, this.map.get(base) + 1);
-        }
-
-        private long getCount(final byte base) {
-            return this.map.get(base);
-        }
-
     }
 
-    private class ContextMap {
-        private final Map<String, BaseMap> map;
+    private class AlleleCounter {
+        private final Map<String, Map<Byte, Long>> alleleCountsPerContext;
 
-        private ContextMap(final Set<String> contexts) {
-            this.map = new HashMap<String, BaseMap>();
-            for (final String context : contexts) this.map.put(context, new BaseMap());
+        private AlleleCounter(final Set<String> contexts) {
+            // populate empty counts
+            this.alleleCountsPerContext = new HashMap<String, Map<Byte, Long>>();
+            for (final String context : contexts) {
+                final Map<Byte, Long> baseCounts = new HashMap<Byte, Long>();
+                for (final byte b : BASES) baseCounts.put(b, 0l);
+                this.alleleCountsPerContext.put(context, baseCounts);
+            }
         }
 
         private void addCallToContext(final String context, final byte calledBase) {
-            this.map.get(context).add(calledBase);
+            final Map<Byte, Long> baseCounts = this.alleleCountsPerContext.get(context);
+            baseCounts.put(calledBase, baseCounts.get(calledBase) + 1);
         }
 
-        private List<FfpeDetailMetrics> getContextLevelMetrics(final String sampleAlias, final String library) {
+        private LibraryLevelMetrics finalizeAndComputeMetrics(final String sampleAlias, final String library) {
+
+            /**
+             * 1. compute context-level metrics.
+             */
             final List<FfpeDetailMetrics> contextLevelMetrics = new ArrayList<FfpeDetailMetrics>();
-            for (final String context : map.keySet()) {
+            for (final String context : this.alleleCountsPerContext.keySet()) {
                 final byte refBase = (byte) context.charAt(CONTEXT_SIZE);
                 for (final byte altBase : BASES) {
                     if (altBase != refBase) {
-                        final FfpeDetailMetrics m = new FfpeDetailMetrics();
-                        m.SAMPLE_ALIAS = sampleAlias;
-                        m.LIBRARY = library;
-                        m.CONTEXT = context;
-                        m.REF_BASE = refBase;
-                        m.ALT_BASE = altBase;
-                        // here's where the actual math happens
-                        m.FWD_REF_REF_BASES = this.map.get(context).getCount(refBase);
-                        m.FWD_REF_ALT_BASES = this.map.get(context).getCount(altBase);
-                        m.REV_REF_REF_BASES = this.map.get(SequenceUtil.reverseComplement(context)).getCount(SequenceUtil.complement(refBase));
-                        m.REV_REF_ALT_BASES = this.map.get(SequenceUtil.reverseComplement(context)).getCount(SequenceUtil.complement(altBase));
+                        final FfpeDetailMetrics clm = new FfpeDetailMetrics();
+                        clm.SAMPLE_ALIAS = sampleAlias;
+                        clm.LIBRARY = library;
+                        clm.CONTEXT = context;
+                        clm.REF_BASE = refBase;
+                        clm.ALT_BASE = altBase;
+
                         /**
-                         * Note that for every positive error rate, there will be an equally negative one somewhere else. These negative
-                         * error rates are replaced with a very small number, yielding a very large q-score.
+                         * TODO explain what we're counting here
                          */
-                        m.ERROR_RATE = Math.max(1, m.FWD_REF_ALT_BASES - m.REV_REF_ALT_BASES)
-                                / (double) (m.FWD_REF_REF_BASES + m.FWD_REF_ALT_BASES + m.REV_REF_REF_BASES + m.REV_REF_ALT_BASES);
-                        m.QSCORE = -10 * log10(m.ERROR_RATE);
-                        contextLevelMetrics.add(m);
+                        clm.FWD_REF_REF_BASES = this.alleleCountsPerContext.get(context).get(refBase);
+                        clm.FWD_REF_ALT_BASES = this.alleleCountsPerContext.get(context).get(altBase);
+                        clm.REV_REF_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
+                        clm.REV_REF_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(altBase));
+
+                        clm.calculateDerivedStatistics();
+                        contextLevelMetrics.add(clm);
                     }
                 }
             }
-            return contextLevelMetrics;
+
+            /**
+             * 2. collapse context-level metrics into artifact-level metrics.
+             * TODO refactor this to be less cumbersome?
+             */
+            final CollectionUtil.TwoKeyHashMap<Byte, Byte, FfpeDetailMetrics> artifactLevelMetricsMap =
+                    new CollectionUtil.TwoKeyHashMap<Byte, Byte, FfpeDetailMetrics>();
+            for (final byte refBase : BASES) {
+                for (final byte altBase : BASES) {
+                    if (altBase != refBase) {
+                        final FfpeDetailMetrics alm = new FfpeDetailMetrics();
+                        alm.SAMPLE_ALIAS = sampleAlias;
+                        alm.LIBRARY = library;
+                        alm.CONTEXT = ALL_CONTEXTS;
+                        alm.REF_BASE = refBase;
+                        alm.ALT_BASE = altBase;
+                        alm.FWD_REF_REF_BASES = 0;
+                        alm.FWD_REF_ALT_BASES = 0;
+                        alm.REV_REF_REF_BASES = 0;
+                        alm.REV_REF_ALT_BASES = 0;
+                        artifactLevelMetricsMap.put(refBase, altBase, alm);
+                    }
+                }
+            }
+            for (final FfpeDetailMetrics clm : contextLevelMetrics) {
+                final FfpeDetailMetrics alm = artifactLevelMetricsMap.get(clm.REF_BASE, clm.ALT_BASE);
+                alm.FWD_REF_REF_BASES += clm.FWD_REF_REF_BASES;
+                alm.FWD_REF_ALT_BASES += clm.FWD_REF_ALT_BASES;
+                alm.REV_REF_REF_BASES += clm.REV_REF_REF_BASES;
+                alm.REV_REF_ALT_BASES += clm.REV_REF_ALT_BASES;
+            }
+            for (final FfpeDetailMetrics alm : artifactLevelMetricsMap.values()) {
+                alm.calculateDerivedStatistics();
+            }
+
+            /**
+             * 3. collapse artifact-level metrics into a single summary metric.
+             */
+            final FfpeSummaryMetrics summaryMetrics = new FfpeSummaryMetrics();
+            summaryMetrics.SAMPLE_ALIAS = sampleAlias;
+            summaryMetrics.LIBRARY = library;
+            summaryMetrics.A_TO_C_QSCORE = artifactLevelMetricsMap.get((byte)'A', (byte)'C').QSCORE;
+            summaryMetrics.A_TO_G_QSCORE = artifactLevelMetricsMap.get((byte)'A', (byte)'G').QSCORE;
+            summaryMetrics.A_TO_T_QSCORE = artifactLevelMetricsMap.get((byte)'A', (byte)'T').QSCORE;
+            summaryMetrics.C_TO_A_QSCORE = artifactLevelMetricsMap.get((byte)'C', (byte)'A').QSCORE;
+            summaryMetrics.C_TO_G_QSCORE = artifactLevelMetricsMap.get((byte)'C', (byte)'G').QSCORE;
+            summaryMetrics.C_TO_T_QSCORE = artifactLevelMetricsMap.get((byte)'C', (byte)'T').QSCORE;
+            summaryMetrics.G_TO_A_QSCORE = artifactLevelMetricsMap.get((byte)'G', (byte)'A').QSCORE;
+            summaryMetrics.G_TO_C_QSCORE = artifactLevelMetricsMap.get((byte)'G', (byte)'C').QSCORE;
+            summaryMetrics.G_TO_T_QSCORE = artifactLevelMetricsMap.get((byte)'G', (byte)'T').QSCORE;
+            summaryMetrics.T_TO_A_QSCORE = artifactLevelMetricsMap.get((byte)'T', (byte)'A').QSCORE;
+            summaryMetrics.T_TO_C_QSCORE = artifactLevelMetricsMap.get((byte)'T', (byte)'C').QSCORE;
+            summaryMetrics.T_TO_G_QSCORE = artifactLevelMetricsMap.get((byte)'T', (byte)'G').QSCORE;
+
+            /** 4. bring them all and in the darkness bind them */
+            final List<FfpeDetailMetrics> artifactLevelMetrics = new ArrayList<FfpeDetailMetrics>(artifactLevelMetricsMap.values());
+            return new LibraryLevelMetrics(contextLevelMetrics, artifactLevelMetrics, summaryMetrics);
         }
     }
 
     /**
-     * A library-level accumulator for state transitions.
+     *
      */
     private class FfpeCalculator {
         private final Set<String> acceptedContexts;
         private final Set<String> acceptedLibraries;
-        private final Map<String, ContextMap> libraryMap;
+        private final Map<String, AlleleCounter> libraryMap;
 
         private FfpeCalculator(final Set<String> libraries, final Set<String> contexts) {
             this.acceptedLibraries = libraries;
             this.acceptedContexts = contexts;
-            this.libraryMap = new HashMap<String, ContextMap>();
+            this.libraryMap = new HashMap<String, AlleleCounter>();
             for (final String library : libraries) {
-                this.libraryMap.put(library, new ContextMap(contexts));
+                this.libraryMap.put(library, new AlleleCounter(contexts));
             }
         }
 
-        /**
-         * This is where we actually do the counting - examine all reads overlapping the given reference locus, and
-         * count up the observed genotypes.
-         */
         private void countAlleles(final SamLocusIterator.LocusInfo info, final String refContext) {
             for (final SamLocusIterator.RecordAndOffset rec : info.getRecordAndPositions()) {
                 final byte qual;
@@ -477,6 +564,12 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             }
         }
 
-        // TODO writeMetrics method
+        private List<LibraryLevelMetrics> finalize(final String sampleAlias) {
+            final List<LibraryLevelMetrics> allMetrics = new ArrayList<LibraryLevelMetrics>();
+            for (final String library : this.libraryMap.keySet()) {
+                allMetrics.add(this.libraryMap.get(library).finalizeAndComputeMetrics(sampleAlias, library));
+            }
+            return allMetrics;
+        }
     }
 }
