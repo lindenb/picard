@@ -14,6 +14,7 @@ import htsjdk.samtools.util.CloserUtil;
 import htsjdk.samtools.util.CollectionUtil;
 import htsjdk.samtools.util.IOUtil;
 import htsjdk.samtools.util.IntervalList;
+import htsjdk.samtools.util.ListMap;
 import htsjdk.samtools.util.Log;
 import htsjdk.samtools.util.SamLocusIterator;
 import htsjdk.samtools.util.SequenceUtil;
@@ -102,6 +103,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private static final String UNKNOWN_SAMPLE = "UnknownSample";
     private static final String ALL_CONTEXTS = "***";
     private static final byte[] BASES = {'A', 'C', 'G', 'T'};
+    private static final double MIN_ERROR = 1e-10;
 
     private static class FfpeArtifact {
         // TODO
@@ -110,7 +112,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     public static class FfpeSummaryMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
-
 
         // TODO include error rates?
         public double A_TO_C_QSCORE;
@@ -136,27 +137,18 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     public static class FfpeDetailMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
+        public String CONTEXT;
 
         // TODO these need to be printed as chars, not bytes!
         public byte REF_BASE;
         public byte ALT_BASE;
 
-        public String CONTEXT;
-
-        public long FWD_CXT_FWD_REF_BASES;
-        public long FWD_CXT_FWD_ALT_BASES;
-        public long REV_CXT_REV_REF_BASES;
-        public long REV_CXT_REV_ALT_BASES;
-
-        public long FWD_CXT_REV_REF_BASES;
-        public long FWD_CXT_REV_ALT_BASES;
-        public long REV_CXT_FWD_REF_BASES;
-        public long REV_CXT_FWD_ALT_BASES;
-
-        // TODO include number of covered sites?
+        public long PRO_REF_BASES;
+        public long PRO_ALT_BASES;
+        public long CON_REF_BASES;
+        public long CON_ALT_BASES;
 
         public double ERROR_RATE;
-        public double BIAS_RATE;
         public double QSCORE;
         // TODO p-value?
 
@@ -172,35 +164,52 @@ public class CollectFfpeMetrics extends CommandLineProgram {
          * same prepped library.
          */
         private void calculateDerivedStatistics() {
-            final long totalBases = this.FWD_CXT_FWD_REF_BASES + this.FWD_CXT_FWD_ALT_BASES + this.REV_CXT_REV_REF_BASES + this.REV_CXT_REV_ALT_BASES;
+            this.ERROR_RATE = MIN_ERROR;
+            final long totalBases = this.PRO_REF_BASES + this.PRO_ALT_BASES + this.CON_REF_BASES + this.CON_ALT_BASES;
             if (totalBases > 0) {
-                final double rawErrorRate = (this.FWD_CXT_FWD_ALT_BASES - this.REV_CXT_REV_ALT_BASES) / (double) totalBases;
-                this.ERROR_RATE = Math.max(1e-10, rawErrorRate);
-            } else {
-                this.ERROR_RATE = 1e-10;
+                final double rawErrorRate = (this.PRO_ALT_BASES - this.CON_ALT_BASES) / (double) totalBases;
+                this.ERROR_RATE = Math.max(MIN_ERROR, rawErrorRate);
             }
-
-            final long botalTases = this.FWD_CXT_REV_REF_BASES + this.FWD_CXT_REV_ALT_BASES + this.REV_CXT_FWD_REF_BASES + this.REV_CXT_FWD_ALT_BASES;
-            if (botalTases > 0) {
-                final double rawBiasRate = 0; // TODO
-                this.BIAS_RATE = Math.max(1e-10, rawBiasRate);
-            } else {
-                this.BIAS_RATE = 1e-10;
-            }
-
-            // DEBUG
-            System.out.println(FWD_CXT_FWD_REF_BASES);
-            System.out.println(FWD_CXT_FWD_REF_BASES);
-            System.out.println(FWD_CXT_FWD_ALT_BASES);
-            System.out.println(REV_CXT_REV_REF_BASES);
-            System.out.println(REV_CXT_REV_ALT_BASES);
-            System.out.println(FWD_CXT_REV_REF_BASES);
-            System.out.println(FWD_CXT_REV_ALT_BASES);
-            System.out.println(REV_CXT_FWD_REF_BASES);
-            System.out.println(REV_CXT_FWD_ALT_BASES);
-
             this.QSCORE = -10 * log10(this.ERROR_RATE);
         }
+    }
+
+    public static class ReferenceBiasMetrics extends MetricBase {
+        public String SAMPLE_ALIAS;
+        public String LIBRARY;
+        public String CONTEXT;
+
+        public long FWD_CXT_REF_BASES;
+        public long FWD_CXT_ALT_BASES;
+        public long REV_CXT_REF_BASES;
+        public long REV_CXT_ALT_BASES;
+
+        double FWD_ERROR_RATE;
+        double REV_ERROR_RATE;
+
+        double REF_BIAS;
+
+        /**
+         * TODO explain
+         */
+        private void calculateDerivedStatistics() {
+            this.FWD_ERROR_RATE = MIN_ERROR;
+            final long fwdBases = this.FWD_CXT_REF_BASES + this.FWD_CXT_ALT_BASES;
+            if (fwdBases > 0) {
+                final double fwdErr = this.FWD_CXT_ALT_BASES / (double) fwdBases;
+                this.FWD_ERROR_RATE = Math.max(MIN_ERROR, fwdErr);
+            }
+
+            this.REV_ERROR_RATE = MIN_ERROR;
+            final long revBases = this.REV_CXT_REF_BASES + this.REV_CXT_ALT_BASES;
+            if (revBases > 0) {
+                final double revErr = this.REV_CXT_ALT_BASES / (double) revBases;
+                this.REV_ERROR_RATE = Math.max(MIN_ERROR, revErr);
+            }
+
+            this.REF_BIAS = this.FWD_ERROR_RATE - this.REV_ERROR_RATE;
+        }
+
     }
 
     /**
@@ -418,6 +427,81 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         return -1;
     }
 
+    /**
+     * Breaks down alignments by read1/read2 and positive/negative strand.
+     */
+    private static class AlignmentAccumulator {
+        private long R1_POS = 0;
+        private long R1_NEG = 0;
+        private long R2_POS = 0;
+        private long R2_NEG = 0;
+
+        private void addRecord(final SAMRecord rec) {
+            final boolean isNegativeStrand = rec.getReadNegativeStrandFlag();
+            final boolean isReadTwo = rec.getReadPairedFlag() && rec.getSecondOfPairFlag();
+
+            if (isReadTwo) {
+                if (isNegativeStrand) this.R2_NEG++;
+                else this.R2_POS++;
+            } else {
+                if (isNegativeStrand) this.R1_NEG++;
+                else this.R1_POS++;
+            }
+        }
+
+        private static AlignmentAccumulator combine(final Iterable<AlignmentAccumulator> aas) {
+            final AlignmentAccumulator combined = new AlignmentAccumulator();
+            for (final AlignmentAccumulator aa : aas) {
+                combined.R1_POS += aa.R1_POS;
+                combined.R1_NEG += aa.R1_NEG;
+                combined.R2_POS += aa.R2_POS;
+                combined.R2_NEG += aa.R2_NEG;
+            }
+
+            return combined;
+        }
+    }
+
+    private static class CalledBaseAccumulator extends HashMap<Byte, AlignmentAccumulator> {
+        private CalledBaseAccumulator() {
+            for (final byte b : BASES) {
+                this.put(b, new AlignmentAccumulator());
+            }
+        }
+
+        private void addRecord(final SAMRecord rec, final byte readBase) {
+            this.get(readBase).addRecord(rec);
+        }
+
+        private static CalledBaseAccumulator combine(final Iterable<CalledBaseAccumulator> cbas) {
+            final ListMap<Byte, AlignmentAccumulator> invertedCbas = new ListMap<Byte, AlignmentAccumulator>();
+            for (final CalledBaseAccumulator cba : cbas) {
+                for (final byte b : BASES) {
+                    invertedCbas.add(b, cba.get(b));
+                }
+            }
+
+            final CalledBaseAccumulator combined = new CalledBaseAccumulator();
+            for (final byte b : BASES) {
+                combined.put(b, AlignmentAccumulator.combine(invertedCbas.get(b)));
+            }
+
+            return combined;
+        }
+    }
+
+    private static class ContextAccumulator extends HashMap<String, CalledBaseAccumulator> {
+        private ContextAccumulator(final Iterable<String> allowedContexts) {
+            for (final String context : allowedContexts) {
+                this.put(context, new CalledBaseAccumulator());
+            }
+        }
+
+        private void addRecord(final SAMRecord rec, final byte readBase, final String context) {
+            this.get(context).addRecord(rec, readBase);
+        }
+    }
+
     /** A container for metrics at the per-library level. */
     private class LibraryLevelMetrics {
         protected final List<FfpeDetailMetrics> contextLevelMetrics;
@@ -433,6 +517,20 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         }
     }
 
+    private LibraryLevelMetrics extractMetrics(final String sampleAlias, final String library, final ContextAccumulator accumulator) {
+
+        final List<FfpeDetailMetrics> contextLevelMetrics = new ArrayList<FfpeDetailMetrics>();
+        final List<FfpeDetailMetrics> artifactLevelMetrics = new ArrayList<FfpeDetailMetrics>();
+        final List<ReferenceBiasMetrics> referenceBiasMetrics = new ArrayList<ReferenceBiasMetrics>();
+
+        // TODO
+
+        return null;
+    }
+
+    /**
+     * TODO remove this
+     */
     private class AlleleCounter {
         private final Map<String, Map<Byte, Long>> alleleCountsPerContext;
 
@@ -471,14 +569,10 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         /**
                          * TODO explain what we're counting here
                          */
-                        clm.FWD_CXT_FWD_REF_BASES = this.alleleCountsPerContext.get(context).get(refBase);
-                        clm.FWD_CXT_FWD_ALT_BASES = this.alleleCountsPerContext.get(context).get(altBase);
-                        clm.FWD_CXT_REV_REF_BASES = this.alleleCountsPerContext.get(context).get(SequenceUtil.complement(refBase));
-                        clm.FWD_CXT_REV_ALT_BASES = this.alleleCountsPerContext.get(context).get(SequenceUtil.complement(altBase));
-                        clm.REV_CXT_FWD_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(refBase);
-                        clm.REV_CXT_FWD_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(altBase);
-                        clm.REV_CXT_REV_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
-                        clm.REV_CXT_REV_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(altBase));
+                        clm.PRO_REF_BASES = this.alleleCountsPerContext.get(context).get(refBase);
+                        clm.PRO_ALT_BASES = this.alleleCountsPerContext.get(context).get(altBase);
+                        clm.CON_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
+                        clm.CON_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(altBase));
 
                         clm.calculateDerivedStatistics();
                         contextLevelMetrics.add(clm);
@@ -501,22 +595,20 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         alm.CONTEXT = ALL_CONTEXTS;
                         alm.REF_BASE = refBase;
                         alm.ALT_BASE = altBase;
-                        // TODO
-                        alm.FWD_CXT_FWD_REF_BASES = 0;
-                        alm.FWD_CXT_FWD_ALT_BASES = 0;
-                        alm.REV_CXT_REV_REF_BASES = 0;
-                        alm.REV_CXT_REV_ALT_BASES = 0;
+                        alm.PRO_REF_BASES = 0;
+                        alm.PRO_ALT_BASES = 0;
+                        alm.CON_REF_BASES = 0;
+                        alm.CON_ALT_BASES = 0;
                         artifactLevelMetricsMap.put(refBase, altBase, alm);
                     }
                 }
             }
             for (final FfpeDetailMetrics clm : contextLevelMetrics) {
                 final FfpeDetailMetrics alm = artifactLevelMetricsMap.get(clm.REF_BASE, clm.ALT_BASE);
-                // TODO
-                alm.FWD_CXT_FWD_REF_BASES += clm.FWD_CXT_FWD_REF_BASES;
-                alm.FWD_CXT_FWD_ALT_BASES += clm.FWD_CXT_FWD_ALT_BASES;
-                alm.REV_CXT_REV_REF_BASES += clm.REV_CXT_REV_REF_BASES;
-                alm.REV_CXT_REV_ALT_BASES += clm.REV_CXT_REV_ALT_BASES;
+                alm.PRO_REF_BASES += clm.PRO_REF_BASES;
+                alm.PRO_ALT_BASES += clm.PRO_ALT_BASES;
+                alm.CON_REF_BASES += clm.CON_REF_BASES;
+                alm.CON_ALT_BASES += clm.CON_ALT_BASES;
             }
             for (final FfpeDetailMetrics alm : artifactLevelMetricsMap.values()) {
                 alm.calculateDerivedStatistics();
@@ -553,14 +645,14 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private class FfpeCalculator {
         private final Set<String> acceptedContexts;
         private final Set<String> acceptedLibraries;
-        private final Map<String, AlleleCounter> libraryMap;
+        private final Map<String, ContextAccumulator> libraryMap;
 
         private FfpeCalculator(final Set<String> libraries, final Set<String> contexts) {
             this.acceptedLibraries = libraries;
             this.acceptedContexts = contexts;
-            this.libraryMap = new HashMap<String, AlleleCounter>();
+            this.libraryMap = new HashMap<String, ContextAccumulator>();
             for (final String library : libraries) {
-                this.libraryMap.put(library, new AlleleCounter(contexts));
+                this.libraryMap.put(library, new ContextAccumulator(contexts));
             }
         }
 
@@ -585,33 +677,17 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                 if (!acceptedLibraries.contains(library)) continue;
                 if (!acceptedContexts.contains(refContext)) continue;
 
-                final String forwardTemplateContext;
-                final byte forwardCalledBase;
-                /**
-                 * Remember that if the read is aligned to the negative strand, the reported ref + call bases must be reverse complemented
-                 * to reflect the original sequence. Likewise if the read is second in a pair (and thus derived from the reverse template),
-                 * the ref + call bases must be revc'd to reflect the forward template. If both of these conditions are true, they cancel
-                 * each other out (hence the XOR).
-                 */
-                final boolean isNegativeStrand = samrec.getReadNegativeStrandFlag();
-                final boolean isReadTwo = samrec.getReadPairedFlag() && samrec.getSecondOfPairFlag();
-                if (isNegativeStrand ^ isReadTwo) {
-                    forwardTemplateContext = SequenceUtil.reverseComplement(refContext);
-                    forwardCalledBase = SequenceUtil.complement(rec.getReadBase());
-                } else {
-                    forwardTemplateContext = refContext;
-                    forwardCalledBase = rec.getReadBase();
-                }
-
                 // Count the base
-                this.libraryMap.get(library).addCallToContext(forwardTemplateContext, forwardCalledBase);
+                final byte readBase = rec.getReadBase();
+                this.libraryMap.get(library).addRecord(samrec, readBase, refContext);
             }
         }
 
         private List<LibraryLevelMetrics> finalize(final String sampleAlias) {
             final List<LibraryLevelMetrics> allMetrics = new ArrayList<LibraryLevelMetrics>();
             for (final String library : this.libraryMap.keySet()) {
-                allMetrics.add(this.libraryMap.get(library).finalizeAndComputeMetrics(sampleAlias, library));
+                final ContextAccumulator accumulator = this.libraryMap.get(library);
+                // TODO
             }
             return allMetrics;
         }
