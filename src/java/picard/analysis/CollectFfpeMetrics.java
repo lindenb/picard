@@ -103,10 +103,16 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private static final String ALL_CONTEXTS = "***";
     private static final byte[] BASES = {'A', 'C', 'G', 'T'};
 
+    private static class FfpeArtifact {
+        // TODO
+    }
+
     public static class FfpeSummaryMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
 
+
+        // TODO include error rates?
         public double A_TO_C_QSCORE;
         public double A_TO_G_QSCORE;
         public double A_TO_T_QSCORE;
@@ -131,17 +137,26 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
 
+        // TODO these need to be printed as chars, not bytes!
         public byte REF_BASE;
         public byte ALT_BASE;
 
         public String CONTEXT;
 
-        public long FWD_REF_REF_BASES;
-        public long FWD_REF_ALT_BASES;
-        public long REV_REF_REF_BASES;
-        public long REV_REF_ALT_BASES;
+        public long FWD_CXT_FWD_REF_BASES;
+        public long FWD_CXT_FWD_ALT_BASES;
+        public long REV_CXT_REV_REF_BASES;
+        public long REV_CXT_REV_ALT_BASES;
+
+        public long FWD_CXT_REV_REF_BASES;
+        public long FWD_CXT_REV_ALT_BASES;
+        public long REV_CXT_FWD_REF_BASES;
+        public long REV_CXT_FWD_ALT_BASES;
+
+        // TODO include number of covered sites?
 
         public double ERROR_RATE;
+        public double BIAS_RATE;
         public double QSCORE;
         // TODO p-value?
 
@@ -157,10 +172,33 @@ public class CollectFfpeMetrics extends CommandLineProgram {
          * same prepped library.
          */
         private void calculateDerivedStatistics() {
-            // TODO fix divide by zero edge case
-            final double rawErrorRate = (this.FWD_REF_ALT_BASES - this.REV_REF_ALT_BASES)
-                    / (double) (this.FWD_REF_REF_BASES + this.FWD_REF_ALT_BASES + this.REV_REF_REF_BASES + this.REV_REF_ALT_BASES);
-            this.ERROR_RATE = Math.max(rawErrorRate, 1e-10);
+            final long totalBases = this.FWD_CXT_FWD_REF_BASES + this.FWD_CXT_FWD_ALT_BASES + this.REV_CXT_REV_REF_BASES + this.REV_CXT_REV_ALT_BASES;
+            if (totalBases > 0) {
+                final double rawErrorRate = (this.FWD_CXT_FWD_ALT_BASES - this.REV_CXT_REV_ALT_BASES) / (double) totalBases;
+                this.ERROR_RATE = Math.max(1e-10, rawErrorRate);
+            } else {
+                this.ERROR_RATE = 1e-10;
+            }
+
+            final long botalTases = this.FWD_CXT_REV_REF_BASES + this.FWD_CXT_REV_ALT_BASES + this.REV_CXT_FWD_REF_BASES + this.REV_CXT_FWD_ALT_BASES;
+            if (botalTases > 0) {
+                final double rawBiasRate = 0; // TODO
+                this.BIAS_RATE = Math.max(1e-10, rawBiasRate);
+            } else {
+                this.BIAS_RATE = 1e-10;
+            }
+
+            // DEBUG
+            System.out.println(FWD_CXT_FWD_REF_BASES);
+            System.out.println(FWD_CXT_FWD_REF_BASES);
+            System.out.println(FWD_CXT_FWD_ALT_BASES);
+            System.out.println(REV_CXT_REV_REF_BASES);
+            System.out.println(REV_CXT_REV_ALT_BASES);
+            System.out.println(FWD_CXT_REV_REF_BASES);
+            System.out.println(FWD_CXT_REV_ALT_BASES);
+            System.out.println(REV_CXT_FWD_REF_BASES);
+            System.out.println(REV_CXT_FWD_ALT_BASES);
+
             this.QSCORE = -10 * log10(this.ERROR_RATE);
         }
     }
@@ -433,10 +471,14 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         /**
                          * TODO explain what we're counting here
                          */
-                        clm.FWD_REF_REF_BASES = this.alleleCountsPerContext.get(context).get(refBase);
-                        clm.FWD_REF_ALT_BASES = this.alleleCountsPerContext.get(context).get(altBase);
-                        clm.REV_REF_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
-                        clm.REV_REF_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(altBase));
+                        clm.FWD_CXT_FWD_REF_BASES = this.alleleCountsPerContext.get(context).get(refBase);
+                        clm.FWD_CXT_FWD_ALT_BASES = this.alleleCountsPerContext.get(context).get(altBase);
+                        clm.FWD_CXT_REV_REF_BASES = this.alleleCountsPerContext.get(context).get(SequenceUtil.complement(refBase));
+                        clm.FWD_CXT_REV_ALT_BASES = this.alleleCountsPerContext.get(context).get(SequenceUtil.complement(altBase));
+                        clm.REV_CXT_FWD_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(refBase);
+                        clm.REV_CXT_FWD_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(altBase);
+                        clm.REV_CXT_REV_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
+                        clm.REV_CXT_REV_ALT_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(altBase));
 
                         clm.calculateDerivedStatistics();
                         contextLevelMetrics.add(clm);
@@ -459,20 +501,22 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         alm.CONTEXT = ALL_CONTEXTS;
                         alm.REF_BASE = refBase;
                         alm.ALT_BASE = altBase;
-                        alm.FWD_REF_REF_BASES = 0;
-                        alm.FWD_REF_ALT_BASES = 0;
-                        alm.REV_REF_REF_BASES = 0;
-                        alm.REV_REF_ALT_BASES = 0;
+                        // TODO
+                        alm.FWD_CXT_FWD_REF_BASES = 0;
+                        alm.FWD_CXT_FWD_ALT_BASES = 0;
+                        alm.REV_CXT_REV_REF_BASES = 0;
+                        alm.REV_CXT_REV_ALT_BASES = 0;
                         artifactLevelMetricsMap.put(refBase, altBase, alm);
                     }
                 }
             }
             for (final FfpeDetailMetrics clm : contextLevelMetrics) {
                 final FfpeDetailMetrics alm = artifactLevelMetricsMap.get(clm.REF_BASE, clm.ALT_BASE);
-                alm.FWD_REF_REF_BASES += clm.FWD_REF_REF_BASES;
-                alm.FWD_REF_ALT_BASES += clm.FWD_REF_ALT_BASES;
-                alm.REV_REF_REF_BASES += clm.REV_REF_REF_BASES;
-                alm.REV_REF_ALT_BASES += clm.REV_REF_ALT_BASES;
+                // TODO
+                alm.FWD_CXT_FWD_REF_BASES += clm.FWD_CXT_FWD_REF_BASES;
+                alm.FWD_CXT_FWD_ALT_BASES += clm.FWD_CXT_FWD_ALT_BASES;
+                alm.REV_CXT_REV_REF_BASES += clm.REV_CXT_REV_REF_BASES;
+                alm.REV_CXT_REV_ALT_BASES += clm.REV_CXT_REV_ALT_BASES;
             }
             for (final FfpeDetailMetrics alm : artifactLevelMetricsMap.values()) {
                 alm.calculateDerivedStatistics();
