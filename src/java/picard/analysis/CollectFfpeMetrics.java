@@ -387,6 +387,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         for (final LibraryLevelMetrics llm : allMetrics) {
             for (final FfpeDetailMetrics clm : llm.contextLevelMetrics) detailMetricsFile.addMetric(clm);
             for (final FfpeDetailMetrics alm : llm.artifactLevelMetrics) detailMetricsFile.addMetric(alm);
+            for (final ReferenceBiasMetrics rbm : llm.referenceBiasMetrics) refBiasMetricsFile.addMetric(rbm);
             summaryMetricsFile.addMetric(llm.summaryMetrics);
         }
 
