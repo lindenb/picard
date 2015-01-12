@@ -358,6 +358,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             if (dbSnp != null && dbSnp.isDbSnpSite(chrom, pos)) continue;
 
             // Skip sites at the end of chromosomes
+            // TODO what should the buffer be? In OxoG it's always 3, but that could crash if CONTEXT_SIZE is greater than 1
             final byte[] bases = refWalker.get(info.getSequenceIndex()).getBases();
             if (pos < contextLength || pos > bases.length - contextLength) continue;
 
@@ -587,7 +588,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                     detailMetric.PRO_REF_BASES = fwdRefAlignments.R1_POS + fwdRefAlignments.R2_NEG + revRefAlignments.R1_NEG + revRefAlignments.R2_POS;
                     detailMetric.PRO_ALT_BASES = fwdAltAlignments.R1_POS + fwdAltAlignments.R2_NEG + revAltAlignments.R1_NEG + revAltAlignments.R2_POS;
                     detailMetric.CON_REF_BASES = fwdRefAlignments.R1_NEG + fwdRefAlignments.R2_POS + revRefAlignments.R1_POS + revRefAlignments.R2_NEG;
-                    detailMetric.PRO_ALT_BASES = fwdAltAlignments.R1_NEG + fwdAltAlignments.R2_POS + revAltAlignments.R1_POS + revAltAlignments.R2_NEG;
+                    detailMetric.CON_ALT_BASES = fwdAltAlignments.R1_NEG + fwdAltAlignments.R2_POS + revAltAlignments.R1_POS + revAltAlignments.R2_NEG;
 
                     refBiasMetric.FWD_CXT_REF_BASES = fwdRefAlignments.R1_POS + fwdRefAlignments.R1_NEG + fwdRefAlignments.R2_POS + fwdRefAlignments.R2_NEG;
                     refBiasMetric.FWD_CXT_ALT_BASES = fwdAltAlignments.R1_POS + fwdAltAlignments.R1_NEG + fwdAltAlignments.R2_POS + fwdAltAlignments.R2_NEG;
