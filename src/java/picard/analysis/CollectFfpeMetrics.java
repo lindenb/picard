@@ -101,7 +101,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     private final Log log = Log.getInstance(CollectFfpeMetrics.class);
     private static final String UNKNOWN_LIBRARY = "UnknownLibrary";
     private static final String UNKNOWN_SAMPLE = "UnknownSample";
-    private static final String ALL_CONTEXTS = "***";
     private static final byte[] BASES = {'A', 'C', 'G', 'T'};
     private static final double MIN_ERROR = 1e-10;
 
@@ -133,15 +132,28 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
     /**
      * Metrics for a specific mutation type, possibly limited to a specific context.
+     *
+     * Here's an example: the characteristic OxoG artifact is that a G on the reference strand gets oxidated
+     * and binds to an A, rather than a C. Thus the negative strand says 'A', and when it gets reverse transcribed
+     * we get a 'T' where the original strand had a 'G'. The resulting alignment would call a G>T variant on read1,
+     * or a C>A variant on read2 (or the opposite, if the read aligns to the negative strand of the reference).
+     * The error rate is then computed as:
+     *
+     * ((G>T read 1 + C>A read 2) - (G>T read 2 + C>A read 1)) / (G>T read 1 + G>T read 2 + G>G read 1 + G>G read 2 + C>A read 1 + C>A read 2 + C>C read 1 + C>C read 2)
+     * = (alt alignments supporting OxoG - alt alignments refuting OxoG) / (alt alignments relating to OxoG + corresponding ref alignments)
+     *
+     * The key here is that IF the damage occurs on the reference strand before PCR, read 1 will preferentially see one kind of variant
+     * and read 2 will preferentially see the reverse complement of that variant (whereas actual mutations should occur equally on both strands,
+     * so their contributions will cancel out in the calculation).
+     *
      */
     public static class FfpeDetailMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
         public String CONTEXT;
 
-        // TODO these need to be printed as chars, not bytes!
-        public byte REF_BASE;
-        public byte ALT_BASE;
+        public char REF_BASE;
+        public char ALT_BASE;
 
         public long PRO_REF_BASES;
         public long PRO_ALT_BASES;
@@ -174,10 +186,21 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         }
     }
 
+    /**
+     * TODO explain
+     *
+     * Continuing the OxoG example above:
+     * (G>T read 1 + G>T read 2) / (G>T read 1 + G>T read 2 + G>G read 1 + G>G read 2) = G>T alignments / (G>T alignments + G>G alignments)
+     * (C>A read 1 + C>A read 2) / (C>A read 1 + C>A read 2 + C>C read 1 + C>C read 2) = C>A alignments / (C>A alignments + C>C alignments)
+     *
+     */
     public static class ReferenceBiasMetrics extends MetricBase {
         public String SAMPLE_ALIAS;
         public String LIBRARY;
         public String CONTEXT;
+
+        public char REF_BASE;
+        public char ALT_BASE;
 
         public long FWD_CXT_REF_BASES;
         public long FWD_CXT_ALT_BASES;
@@ -190,7 +213,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         double REF_BIAS;
 
         /**
-         * TODO explain
+         * This calculation follows from the C_REF and G_REF error rates in CollectOxoGMetrics.
          */
         private void calculateDerivedStatistics() {
             this.FWD_ERROR_RATE = MIN_ERROR;
@@ -275,10 +298,12 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     protected int doWork() {
         final File SUMMARY_OUT = new File(OUTPUT + ".ffpe_summary_metrics");
         final File DETAILS_OUT = new File(OUTPUT + ".ffpe_detail_metrics");
+        final File REFBIAS_OUT = new File(OUTPUT + ".reference_bias_metrics");
 
         IOUtil.assertFileIsReadable(INPUT);
         IOUtil.assertFileIsWritable(SUMMARY_OUT);
         IOUtil.assertFileIsWritable(DETAILS_OUT);
+        IOUtil.assertFileIsWritable(REFBIAS_OUT);
 
         if (INTERVALS != null) IOUtil.assertFileIsReadable(INTERVALS);
         IOUtil.assertFileIsReadable(REFERENCE_SEQUENCE);
@@ -354,15 +379,20 @@ public class CollectFfpeMetrics extends CommandLineProgram {
         // Finish up and write metrics
         final MetricsFile<FfpeSummaryMetrics, Integer> summaryMetricsFile = getMetricsFile();
         final MetricsFile<FfpeDetailMetrics, Integer> detailMetricsFile = getMetricsFile();
+        final MetricsFile<ReferenceBiasMetrics, Integer> refBiasMetricsFile = getMetricsFile();
+
         final String sampleAlias = StringUtil.join(",", new ArrayList<String>(samples));
         final List<LibraryLevelMetrics> allMetrics = counts.finalize(sampleAlias);
+
         for (final LibraryLevelMetrics llm : allMetrics) {
             for (final FfpeDetailMetrics clm : llm.contextLevelMetrics) detailMetricsFile.addMetric(clm);
             for (final FfpeDetailMetrics alm : llm.artifactLevelMetrics) detailMetricsFile.addMetric(alm);
             summaryMetricsFile.addMetric(llm.summaryMetrics);
         }
+
         summaryMetricsFile.write(SUMMARY_OUT);
         detailMetricsFile.write(DETAILS_OUT);
+        refBiasMetricsFile.write(REFBIAS_OUT);
         CloserUtil.close(in);
         return 0;
     }
@@ -503,29 +533,80 @@ public class CollectFfpeMetrics extends CommandLineProgram {
     }
 
     /** A container for metrics at the per-library level. */
-    private class LibraryLevelMetrics {
-        protected final List<FfpeDetailMetrics> contextLevelMetrics;
-        protected final List<FfpeDetailMetrics> artifactLevelMetrics;
-        protected final FfpeSummaryMetrics summaryMetrics;
+    private static class LibraryLevelMetrics {
+        private final List<FfpeDetailMetrics> contextLevelMetrics;
+        private final List<FfpeDetailMetrics> artifactLevelMetrics;
+        private final List<ReferenceBiasMetrics> referenceBiasMetrics;
+        private final FfpeSummaryMetrics summaryMetrics;
 
         private LibraryLevelMetrics(final List<FfpeDetailMetrics> contextLevelMetrics,
                                     final List<FfpeDetailMetrics> artifactLevelMetrics,
+                                    final List<ReferenceBiasMetrics> referenceBiasMetrics,
                                     final FfpeSummaryMetrics summaryMetrics) {
             this.contextLevelMetrics = contextLevelMetrics;
             this.artifactLevelMetrics = artifactLevelMetrics;
+            this.referenceBiasMetrics = referenceBiasMetrics;
             this.summaryMetrics = summaryMetrics;
         }
     }
 
-    private LibraryLevelMetrics extractMetrics(final String sampleAlias, final String library, final ContextAccumulator accumulator) {
-
+    private LibraryLevelMetrics extractMetrics(final String sampleAlias, final String library, final ContextAccumulator contextAccumulator) {
         final List<FfpeDetailMetrics> contextLevelMetrics = new ArrayList<FfpeDetailMetrics>();
         final List<FfpeDetailMetrics> artifactLevelMetrics = new ArrayList<FfpeDetailMetrics>();
         final List<ReferenceBiasMetrics> referenceBiasMetrics = new ArrayList<ReferenceBiasMetrics>();
+        final FfpeSummaryMetrics summaryMetrics = new FfpeSummaryMetrics();
 
-        // TODO
+        for (final String context : contextAccumulator.keySet()) {
+            final byte refBase = (byte) context.charAt(CONTEXT_SIZE);
+            for (final byte altBase : BASES) {
+                if (altBase != refBase) {
+                    final FfpeDetailMetrics detailMetric = new FfpeDetailMetrics();
+                    final ReferenceBiasMetrics refBiasMetric = new ReferenceBiasMetrics();
 
-        return null;
+                    // retrieve all the necessary alignment counters
+                    final AlignmentAccumulator fwdRefAlignments = contextAccumulator.get(context).get(refBase);
+                    final AlignmentAccumulator fwdAltAlignments = contextAccumulator.get(context).get(altBase);
+                    final AlignmentAccumulator revRefAlignments = contextAccumulator.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
+                    final AlignmentAccumulator revAltAlignments = contextAccumulator.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(altBase));
+
+                    // populate basic fields
+                    detailMetric.SAMPLE_ALIAS = sampleAlias;
+                    detailMetric.LIBRARY = library;
+                    detailMetric.CONTEXT = context;
+                    detailMetric.REF_BASE = (char) refBase;
+                    detailMetric.ALT_BASE = (char) altBase;
+
+                    refBiasMetric.SAMPLE_ALIAS = sampleAlias;
+                    refBiasMetric.LIBRARY = library;
+                    refBiasMetric.CONTEXT = context;
+                    refBiasMetric.REF_BASE = (char) refBase;
+                    refBiasMetric.ALT_BASE = (char) altBase;
+
+                    // do the actual counting, as explained in the metric definitions
+                    detailMetric.PRO_REF_BASES = fwdRefAlignments.R1_POS + fwdRefAlignments.R2_NEG + revRefAlignments.R1_NEG + revRefAlignments.R2_POS;
+                    detailMetric.PRO_ALT_BASES = fwdAltAlignments.R1_POS + fwdAltAlignments.R2_NEG + revAltAlignments.R1_NEG + revAltAlignments.R2_POS;
+                    detailMetric.CON_REF_BASES = fwdRefAlignments.R1_NEG + fwdRefAlignments.R2_POS + revRefAlignments.R1_POS + revRefAlignments.R2_NEG;
+                    detailMetric.PRO_ALT_BASES = fwdAltAlignments.R1_NEG + fwdAltAlignments.R2_POS + revAltAlignments.R1_POS + revAltAlignments.R2_NEG;
+
+                    refBiasMetric.FWD_CXT_REF_BASES = fwdRefAlignments.R1_POS + fwdRefAlignments.R1_NEG + fwdRefAlignments.R2_POS + fwdRefAlignments.R2_NEG;
+                    refBiasMetric.FWD_CXT_ALT_BASES = fwdAltAlignments.R1_POS + fwdAltAlignments.R1_NEG + fwdAltAlignments.R2_POS + fwdAltAlignments.R2_NEG;
+                    refBiasMetric.REV_CXT_REF_BASES = revRefAlignments.R1_POS + revRefAlignments.R1_NEG + revRefAlignments.R2_POS + revRefAlignments.R2_NEG;
+                    refBiasMetric.REV_CXT_ALT_BASES = revAltAlignments.R1_POS + revAltAlignments.R1_NEG + revAltAlignments.R2_POS + revAltAlignments.R2_NEG;
+
+                    // calculate derived stats (conveniently in a separate method)
+                    detailMetric.calculateDerivedStatistics();
+                    refBiasMetric.calculateDerivedStatistics();
+
+                    // add to list
+                    contextLevelMetrics.add(detailMetric);
+                    referenceBiasMetrics.add(refBiasMetric);
+                }
+            }
+        }
+
+        // TODO compute higher-level metrics
+
+        return new LibraryLevelMetrics(contextLevelMetrics, artifactLevelMetrics, referenceBiasMetrics, summaryMetrics);
     }
 
     /**
@@ -563,12 +644,7 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         clm.SAMPLE_ALIAS = sampleAlias;
                         clm.LIBRARY = library;
                         clm.CONTEXT = context;
-                        clm.REF_BASE = refBase;
-                        clm.ALT_BASE = altBase;
 
-                        /**
-                         * TODO explain what we're counting here
-                         */
                         clm.PRO_REF_BASES = this.alleleCountsPerContext.get(context).get(refBase);
                         clm.PRO_ALT_BASES = this.alleleCountsPerContext.get(context).get(altBase);
                         clm.CON_REF_BASES = this.alleleCountsPerContext.get(SequenceUtil.reverseComplement(context)).get(SequenceUtil.complement(refBase));
@@ -582,7 +658,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
             /**
              * 2. collapse context-level metrics into artifact-level metrics.
-             * TODO refactor this to be less cumbersome?
              */
             final CollectionUtil.TwoKeyHashMap<Byte, Byte, FfpeDetailMetrics> artifactLevelMetricsMap =
                     new CollectionUtil.TwoKeyHashMap<Byte, Byte, FfpeDetailMetrics>();
@@ -592,9 +667,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         final FfpeDetailMetrics alm = new FfpeDetailMetrics();
                         alm.SAMPLE_ALIAS = sampleAlias;
                         alm.LIBRARY = library;
-                        alm.CONTEXT = ALL_CONTEXTS;
-                        alm.REF_BASE = refBase;
-                        alm.ALT_BASE = altBase;
                         alm.PRO_REF_BASES = 0;
                         alm.PRO_ALT_BASES = 0;
                         alm.CON_REF_BASES = 0;
@@ -602,16 +674,6 @@ public class CollectFfpeMetrics extends CommandLineProgram {
                         artifactLevelMetricsMap.put(refBase, altBase, alm);
                     }
                 }
-            }
-            for (final FfpeDetailMetrics clm : contextLevelMetrics) {
-                final FfpeDetailMetrics alm = artifactLevelMetricsMap.get(clm.REF_BASE, clm.ALT_BASE);
-                alm.PRO_REF_BASES += clm.PRO_REF_BASES;
-                alm.PRO_ALT_BASES += clm.PRO_ALT_BASES;
-                alm.CON_REF_BASES += clm.CON_REF_BASES;
-                alm.CON_ALT_BASES += clm.CON_ALT_BASES;
-            }
-            for (final FfpeDetailMetrics alm : artifactLevelMetricsMap.values()) {
-                alm.calculateDerivedStatistics();
             }
 
             /**
@@ -635,7 +697,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
 
             /** 4. bring them all and in the darkness bind them */
             final List<FfpeDetailMetrics> artifactLevelMetrics = new ArrayList<FfpeDetailMetrics>(artifactLevelMetricsMap.values());
-            return new LibraryLevelMetrics(contextLevelMetrics, artifactLevelMetrics, summaryMetrics);
+            //return new LibraryLevelMetrics(contextLevelMetrics, artifactLevelMetrics, summaryMetrics);
+            return null;
         }
     }
 
@@ -687,7 +750,8 @@ public class CollectFfpeMetrics extends CommandLineProgram {
             final List<LibraryLevelMetrics> allMetrics = new ArrayList<LibraryLevelMetrics>();
             for (final String library : this.libraryMap.keySet()) {
                 final ContextAccumulator accumulator = this.libraryMap.get(library);
-                // TODO
+                final LibraryLevelMetrics metrics = extractMetrics(sampleAlias, library, accumulator);
+                allMetrics.add(metrics);
             }
             return allMetrics;
         }
