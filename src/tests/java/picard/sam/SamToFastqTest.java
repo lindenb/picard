@@ -60,7 +60,7 @@ public class SamToFastqTest extends CommandLineProgramTest {
     @DataProvider(name = "okFiles")
     public Object[][] okFiles() {
         return new Object[][] {
-                {"ok/sorted-pair.sam"}, // 5 sorted pairs (10 records) - mate1, mate2
+                {"ok/sorted-pair.sam"}, // 6 sorted pairs (12 records) - mate1, mate2
                 {"ok/sorted-pair-no-rg.sam"}, // 5 sorted pairs (10 records) - mate1, mate2, no read group
                 {"ok/last-pair-mates-flipped.sam" }, // 4 pairs, :05 mate2, mate1
                 {"ok/first-mate-bof-last-mate-eof.sam"}, // :01 mate1, 4 pairs, :01 mate2
@@ -139,7 +139,8 @@ public class SamToFastqTest extends CommandLineProgramTest {
         convertFile(new String[]{
               "INPUT=" + samFile.getAbsolutePath(),
               "FASTQ=" + pair1File.getAbsolutePath(),
-              "SECOND_END_FASTQ=" + pair2File.getAbsolutePath()
+              "SECOND_END_FASTQ=" + pair2File.getAbsolutePath(),
+              "PLATFORM_VENDOR_FLAG=false"
         });
 
         // Check that paired fastq files are same size
@@ -171,7 +172,8 @@ public class SamToFastqTest extends CommandLineProgramTest {
         convertFile(new String[]{
                 "INPUT=" + samFile.getAbsolutePath(),
                 "FASTQ=" + pairFile.getAbsolutePath(),
-                "INTERLEAVE=true"
+                "INTERLEAVE=true",
+                "PLATFORM_VENDOR_FLAG=false"
         });
 
         final Set<String> outputHeaderSet = createFastqReadHeaderSet(pairFile);

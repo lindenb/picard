@@ -151,6 +151,10 @@ public class SamToFastq extends CommandLineProgram {
             "is not comprehensive, so there may be exceptions if this is set to true and there are paired reads with non-primary alignments.")
     public boolean INCLUDE_NON_PRIMARY_ALIGNMENTS = false;
 
+    @Option(shortName="PVF", doc = "If true, paired reads with sam flag 512 (read fails platform/vendor quality checks) will have a "
+            + " name with a prefix ':Y:' or ':N:' for compatibility with mappers like bwa")
+    public boolean PLATFORM_VENDOR_FLAG = false;
+    
     private final Log log = Log.getInstance(SamToFastq.class);
 
     public static void main(final String[] argv) {
@@ -291,7 +295,14 @@ public class SamToFastq extends CommandLineProgram {
 
     void writeRecord(final SAMRecord read, final Integer mateNumber, final FastqWriter writer,
                      final int basesToTrim, final Integer maxBasesToWrite) {
-        final String seqHeader = mateNumber == null ? read.getReadName() : read.getReadName() + "/" + mateNumber;
+        final String seqHeader;
+        if( mateNumber == null ) {
+            seqHeader = read.getReadName() ;
+        } else if( PLATFORM_VENDOR_FLAG ){
+            seqHeader = read.getReadName() + " " + mateNumber+":" + (read.getReadFailsVendorQualityCheckFlag()?"Y":"N") + ":0:";
+        } else {
+            seqHeader = read.getReadName() + "/" + mateNumber;
+        }
         String readString = read.getReadString();
         String baseQualities = read.getBaseQualityString();
 
